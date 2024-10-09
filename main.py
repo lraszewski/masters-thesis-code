@@ -11,8 +11,8 @@ from sklearn.metrics import fbeta_score, precision_score, recall_score, accuracy
 from scipy.interpolate import interp1d
 
 from data import TaskDistribution
-from models import ClassificationHead, RobertaPooler, EncoderModel, EncoderClassifierModel
-from helpers import generate_stats
+from models import ClassificationHead, RobertaPooler, EncoderModel, BiLSTMModel, EncoderClassifierModel
+from helpers import generate_stats, EarlyStopper
 from loss import ContrastiveLoss
 
 STATS_PATH = 'stats/stats.csv'
@@ -53,13 +53,13 @@ class Experiment:
                         positive_input_ids, positive_attention_mask,
                         negative_input_ids, negative_attention_mask
                     ) in support_dataloader:
-                        anchor_word_embeddings = self.roberta(anchor_input_ids, anchor_attention_mask)[0]
-                        positive_word_embeddings = self.roberta(positive_input_ids, positive_attention_mask)[0]
-                        negative_word_embeddings = self.roberta(negative_input_ids, negative_attention_mask)[0]
+                        anchor_word_embeddings = self.roberta(anchor_input_ids, anchor_attention_mask).last_hidden_state
+                        positive_word_embeddings = self.roberta(positive_input_ids, positive_attention_mask).last_hidden_state
+                        negative_word_embeddings = self.roberta(negative_input_ids, negative_attention_mask).last_hidden_state
                         anchor_embeddings = clone(anchor_word_embeddings, anchor_attention_mask)
                         positive_embeddings = clone(positive_word_embeddings, positive_attention_mask)
                         negative_embeddings = clone(negative_word_embeddings, negative_attention_mask)
-                        loss = criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
+                        loss = self.criterion(anchor_embeddings, positive_embeddings, negative_embeddings)
                         loss.backward()
                         clone_optimiser.step()
                         clone_optimiser.zero_grad()
@@ -67,9 +67,9 @@ class Experiment:
                         pos_train_embeddings.extend(anchor_embeddings.detach().cpu().numpy())
                 else:
                     for input_ids, attention_mask, label in support_dataloader:
-                        word_embeddings = self.roberta(input_ids, attention_mask)[0]
+                        word_embeddings = self.roberta(input_ids, attention_mask).last_hidden_state
                         embeddings = clone(word_embeddings, attention_mask)
-                        loss = criterion(embeddings, label)
+                        loss = self.criterion(embeddings, label)
                         loss.backward()
                         clone_optimiser.step()
                         clone_optimiser.zero_grad()
@@ -86,7 +86,7 @@ class Experiment:
                 query_dataloader = DataLoader(query_set, batch_size=5, shuffle=True, drop_last=False)
                 
                 for input_ids, attention_mask, label in query_dataloader:
-                    word_embeddings = self.roberta(input_ids, attention_mask)[0]
+                    word_embeddings = self.roberta(input_ids, attention_mask).last_hidden_state
                     embeddings = clone(word_embeddings, attention_mask)
                     all_embeddings.extend(embeddings.detach().cpu().numpy())
                     all_labels.extend(label.detach().cpu().numpy())
@@ -130,7 +130,9 @@ class Experiment:
             print('---------------------')
         
 
-def experiment(task_distribution, model, model_criterion, classifier, classifier_criterion, epochs, loss_type):
+
+
+def experiment(task_distribution, model, model_criterion, model_epochs, model_lr, classifier, classifier_criterion, classifier_epochs, classifier_lr, loss_type):
     
     # instantiate a frozen roberta model
     roberta = AutoModel.from_pretrained('sentence-transformers/all-distilroberta-v1', add_pooling_layer=False).to('cuda').eval()
@@ -139,35 +141,55 @@ def experiment(task_distribution, model, model_criterion, classifier, classifier
     
     for support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in task_distribution:
         
+        support_standard_dataloader = DataLoader(support_set_standard, batch_size=5, shuffle=True, drop_last=True)
+        query_standard_dataloader = DataLoader(query_set_standard, batch_size=5, shuffle=True, drop_last=False)
+
+        support_triplet_dataloader = DataLoader(support_set_triplet, batch_size=5, shuffle=True, drop_last=True)
+        query_triplet_dataloader = DataLoader(query_set_triplet, batch_size=5, shuffle=True, drop_last=False)
+        
         # create a clone of the model
         clone = model.clone()
-        clone_optimiser = torch.optim.Adam(clone.parameters(), lr=1e-5)
-
-        # create a classifier
-        clf = classifier.clone()
-        clf_optimiser = torch.optim.Adam(clf.parameters(), lr=1e-3)
+        clone_optimiser = torch.optim.Adam(clone.parameters(), lr=model_lr)
 
         # train model
-        for epoch in range(epochs):
-            support_triplet_dataloader = DataLoader(support_set_triplet, batch_size=5, shuffle=True, drop_last=True)
-            query_triplet_dataloader = DataLoader(query_set_triplet, batch_size=5, shuffle=True, drop_last=False)
-
+        model_train_losses = []
+        model_val_losses = []
+        model_early_stopper = EarlyStopper(patience=2, min_delta=0.01)
+        for epoch in range(model_epochs):
+            
             model_train_loss = train_model(roberta, clone, clone_optimiser, support_triplet_dataloader, model_criterion, loss_type)
             model_val_loss = validate_model(roberta, model, query_triplet_dataloader, model_criterion, loss_type)
+
+            model_train_losses.append(model_train_loss)
+            model_val_losses.append(model_val_loss)
             
             print(str(epoch) + ": ", model_train_loss, model_val_loss)
 
+            if model_early_stopper.early_stop(model_val_loss):
+                break
+
         print("")
 
+        # create a classifier
+        clf = classifier.clone()
+        clf_optimiser = torch.optim.Adam(clf.parameters(), lr=classifier_lr)
+
         # train classifier
-        for epoch in range(epochs):
-            support_standard_dataloader = DataLoader(support_set_standard, batch_size=5, shuffle=True, drop_last=True)
-            query_standard_dataloader = DataLoader(query_set_standard, batch_size=5, shuffle=True, drop_last=False)
+        clf_train_losses = []
+        clf_val_losses = []
+        clf_early_stopper = EarlyStopper(patience=2, min_delta=0.1)
+        for epoch in range(classifier_epochs):
 
             clf_train_loss = train_classifier(roberta, clone, clf, clf_optimiser, support_standard_dataloader, classifier_criterion)            
             clf_val_loss = validate_classifier(roberta, model, clf, query_standard_dataloader, classifier_criterion)
 
+            clf_train_losses.append(clf_train_loss)
+            clf_val_losses.append(clf_val_loss)
+
             print(str(epoch) + ": ", clf_train_loss, clf_val_loss)
+
+            if clf_early_stopper.early_stop(clf_val_loss):
+                break
 
         metrics = validate(roberta, clone, query_standard_dataloader, clf)
         print("Metrics: " + str(metrics))
@@ -185,9 +207,10 @@ def train_model(roberta, model, optimiser, dataloader, criterion, loss_type="tri
         if loss_type == "triplet":
             anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask = batch
             
-            anchor_emb = roberta(anchor_input_ids, anchor_attention_mask)[0]
-            positive_emb = roberta(positive_input_ids, positive_attention_mask)[0]
-            negative_emb = roberta(negative_input_ids, negative_attention_mask)[0]
+            with torch.no_grad():
+                anchor_emb = roberta(anchor_input_ids, anchor_attention_mask).last_hidden_state
+                positive_emb = roberta(positive_input_ids, positive_attention_mask).last_hidden_state
+                negative_emb = roberta(negative_input_ids, negative_attention_mask).last_hidden_state
 
             anchor_emb = model(anchor_emb, anchor_attention_mask)
             positive_emb = model(positive_emb, positive_attention_mask)
@@ -198,8 +221,9 @@ def train_model(roberta, model, optimiser, dataloader, criterion, loss_type="tri
         elif loss_type == "contrastive":
             anchor_input_ids, anchor_attention_mask, query_input_ids, query_attention_mask, labels = batch
 
-            anchor_emb = roberta(anchor_input_ids, anchor_attention_mask)[0]
-            query_emb = roberta(query_input_ids, query_attention_mask)[0]
+            with torch.no_grad():
+                anchor_emb = roberta(anchor_input_ids, anchor_attention_mask).last_hidden_state
+                query_emb = roberta(query_input_ids, query_attention_mask).last_hidden_state
 
             anchor_emb = model(anchor_emb, anchor_attention_mask)
             query_emb = model(query_emb, query_attention_mask)
@@ -226,9 +250,9 @@ def validate_model(roberta, model, dataloader, criterion, loss_type):
         if loss_type == "triplet":
             anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask = batch
             
-            anchor_emb = roberta(anchor_input_ids, anchor_attention_mask)[0]
-            positive_emb = roberta(positive_input_ids, positive_attention_mask)[0]
-            negative_emb = roberta(negative_input_ids, negative_attention_mask)[0]
+            anchor_emb = roberta(anchor_input_ids, anchor_attention_mask).last_hidden_state
+            positive_emb = roberta(positive_input_ids, positive_attention_mask).last_hidden_state
+            negative_emb = roberta(negative_input_ids, negative_attention_mask).last_hidden_state
 
             anchor_emb = model(anchor_emb, anchor_attention_mask)
             positive_emb = model(positive_emb, positive_attention_mask)
@@ -239,8 +263,8 @@ def validate_model(roberta, model, dataloader, criterion, loss_type):
         elif loss_type == "contrastive":
             anchor_input_ids, anchor_attention_mask, query_input_ids, query_attention_mask, labels = batch
 
-            anchor_emb = roberta(anchor_input_ids, anchor_attention_mask)[0]
-            query_emb = roberta(query_input_ids, query_attention_mask)[0]
+            anchor_emb = roberta(anchor_input_ids, anchor_attention_mask).last_hidden_state
+            query_emb = roberta(query_input_ids, query_attention_mask).last_hidden_state
 
             anchor_emb = model(anchor_emb, anchor_attention_mask)
             query_emb = model(query_emb, query_attention_mask)
@@ -265,8 +289,9 @@ def train_classifier(roberta, model, classifier, optimiser, dataloader, criterio
         optimiser.zero_grad()
         
         input_ids, attention_mask, labels = batch
-        roberta_embeddings = roberta(input_ids, attention_mask)[0]
-        model_embeddings = model(roberta_embeddings, attention_mask)
+        with torch.no_grad():
+            roberta_embeddings = roberta(input_ids, attention_mask).last_hidden_state
+            model_embeddings = model(roberta_embeddings, attention_mask)
         logits = classifier(model_embeddings)
         loss = criterion(logits.float(), labels.unsqueeze(1).float())
 
@@ -285,7 +310,7 @@ def validate_classifier(roberta, model, classifier, dataloader, criterion):
 
     for batch in dataloader:
         input_ids, attention_mask, labels = batch
-        roberta_embeddings = roberta(input_ids, attention_mask)[0]
+        roberta_embeddings = roberta(input_ids, attention_mask).last_hidden_state
         model_embeddings = model(roberta_embeddings, attention_mask)
         logits = classifier(model_embeddings)
         loss = criterion(logits.float(), labels.unsqueeze(1).float())
@@ -293,6 +318,7 @@ def validate_classifier(roberta, model, classifier, dataloader, criterion):
 
     avg_loss = total_loss / len(dataloader)
     return avg_loss
+
 
 def validate(roberta, model, dataloader, classifier):
     model.eval()
@@ -303,9 +329,10 @@ def validate(roberta, model, dataloader, classifier):
     with torch.no_grad():
         for batch in dataloader:
             input_ids, attention_mask, labels = batch
-            roberta_embeddings = roberta(input_ids, attention_mask)[0]
+            roberta_embeddings = roberta(input_ids, attention_mask).last_hidden_state
             model_embeddings = model(roberta_embeddings, attention_mask)
-            probs = classifier(model_embeddings)
+            logits = classifier(model_embeddings)
+            probs = torch.sigmoid(logits)
             preds = (probs >= 0.5).int()
             all_labels.append(labels)
             all_preds.append(preds)
@@ -316,11 +343,9 @@ def validate(roberta, model, dataloader, classifier):
     result = metrics(all_labels, all_preds)
     return result
 
-
 def metrics(labels, preds):
     labels = labels.cpu()
     preds = preds.cpu()
-    print(preds)
     result = {
         # 'train_loss': train_loss_sum,
         'accuracy': accuracy_score(labels, preds),
@@ -373,8 +398,14 @@ train_distribution, test_distribution = torch.utils.data.random_split(
 # experiment(test_distribution, model, criterion, 10, "triplet")
 
 model = EncoderModel(768, 8, 6).to(DEVICE)
-model_criterion = nn.TripletMarginLoss()
+model = BiLSTMModel(768, int(768/2), 6).to(DEVICE)
+model_criterion = nn.TripletMarginLoss(margin=0.2)
+model_criterion = nn.TripletMarginWithDistanceLoss(distance_function=nn.CosineSimilarity(), margin=0.2)
+model_epochs = 10
+model_lr = 1
 classifier = ClassificationHead(768, 128).to(DEVICE)
-classifier_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(2.0))
+classifier_criterion = nn.BCEWithLogitsLoss()#pos_weight=torch.tensor(0.5))
+classifier_epochs = 10
+classifier_lr = 1e-3
 
-experiment(test_distribution, model, model_criterion, classifier, classifier_criterion, 2, "triplet")
+experiment(test_distribution, model, model_criterion, model_epochs, model_lr, classifier, classifier_criterion, classifier_epochs, classifier_lr, "triplet")

@@ -63,7 +63,32 @@ class EncoderModel(nn.Module):
         if next(self.parameters()).is_cuda:
             clone.cuda()
         return clone
+
+
+class BiLSTMModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_layers):
+        super(BiLSTMModel, self).__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers=num_layers, bidirectional=True, batch_first=True)
     
+    def forward(self, x, attention_mask):
+
+        attention_mask = attention_mask.unsqueeze(-1)
+        x = x * attention_mask
+
+        lstm_out, _ = self.lstm(x)
+        output = lstm_out.mean(dim=1)
+        return output
+    
+    def clone(self):
+        clone = BiLSTMModel(self.input_dim, self.hidden_dim, self.num_layers)
+        clone.load_state_dict(self.state_dict())
+        if next(self.parameters()).is_cuda:
+            clone.cuda()
+        return clone
+
 
 class EncoderClassifierModel(EncoderModel):
 
