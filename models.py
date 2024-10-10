@@ -52,8 +52,8 @@ class EncoderModel(nn.Module):
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
     def forward(self, embeds, attention_mask):
-        attention_mask = (1.0 - attention_mask) * -1e9
-        embeds = self.transformer_encoder(embeds, src_key_padding_mask=attention_mask)
+        src_key_padding_mask = ~attention_mask.bool()
+        embeds = self.transformer_encoder(embeds, src_key_padding_mask=src_key_padding_mask)
         embeds = embeds.mean(dim=1)
         return embeds
 

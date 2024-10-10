@@ -4,11 +4,16 @@ import torch.nn.functional as F
 import pandas as pd
 import numpy as np
 import os
+import optuna
+import time
+
+from torch.cuda.amp import autocast
 from torch.utils.data import DataLoader
 from transformers import AutoModel
 from sklearn.metrics import roc_auc_score, precision_recall_curve, auc, roc_curve
 from sklearn.metrics import fbeta_score, precision_score, recall_score, accuracy_score
 from scipy.interpolate import interp1d
+from tqdm import tqdm
 
 from data import TaskDistribution
 from models import ClassificationHead, RobertaPooler, EncoderModel, BiLSTMModel, EncoderClassifierModel
@@ -132,43 +137,56 @@ class Experiment:
 
 
 
-def experiment(task_distribution, model, model_criterion, model_epochs, model_lr, classifier, classifier_criterion, classifier_epochs, classifier_lr, loss_type):
+def experiment(task_distribution, model, model_criterion, model_epochs, model_lr, classifier, classifier_criterion, classifier_epochs, classifier_lr, loss_type, logging=False):
     
     # instantiate a frozen roberta model
     roberta = AutoModel.from_pretrained('sentence-transformers/all-distilroberta-v1', add_pooling_layer=False).to('cuda').eval()
     for param in roberta.parameters():
         param.requires_grad = False
     
-    for support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in task_distribution:
-        
-        support_standard_dataloader = DataLoader(support_set_standard, batch_size=5, shuffle=True, drop_last=True)
-        query_standard_dataloader = DataLoader(query_set_standard, batch_size=5, shuffle=True, drop_last=False)
+    results = []
+    iterator = task_distribution
+    if not logging:
+        iterator = tqdm(task_distribution)
 
-        support_triplet_dataloader = DataLoader(support_set_triplet, batch_size=5, shuffle=True, drop_last=True)
-        query_triplet_dataloader = DataLoader(query_set_triplet, batch_size=5, shuffle=True, drop_last=False)
+    for support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in iterator:
+        
+        support_standard_dataloader = DataLoader(support_set_standard, batch_size=10, shuffle=True, drop_last=True)
+        query_standard_dataloader = DataLoader(query_set_standard, batch_size=10, shuffle=True, drop_last=False)
+
+        support_triplet_dataloader = DataLoader(support_set_triplet, batch_size=10, shuffle=True, drop_last=True)
+        query_triplet_dataloader = DataLoader(query_set_triplet, batch_size=10, shuffle=True, drop_last=False)
         
         # create a clone of the model
         clone = model.clone()
         clone_optimiser = torch.optim.Adam(clone.parameters(), lr=model_lr)
 
         # train model
+        
         model_train_losses = []
         model_val_losses = []
         model_early_stopper = EarlyStopper(patience=2, min_delta=0.01)
         for epoch in range(model_epochs):
-            
+            start = time.time()
+
             model_train_loss = train_model(roberta, clone, clone_optimiser, support_triplet_dataloader, model_criterion, loss_type)
             model_val_loss = validate_model(roberta, model, query_triplet_dataloader, model_criterion, loss_type)
 
             model_train_losses.append(model_train_loss)
             model_val_losses.append(model_val_loss)
             
-            print(str(epoch) + ": ", model_train_loss, model_val_loss)
+            if logging:
+                print(str(epoch) + ": ", model_train_loss, model_val_loss)
+            
+            end = time.time()
+            print(end-start)
 
             if model_early_stopper.early_stop(model_val_loss):
                 break
+        
 
-        print("")
+        if logging:
+            print("")
 
         # create a classifier
         clf = classifier.clone()
@@ -186,15 +204,21 @@ def experiment(task_distribution, model, model_criterion, model_epochs, model_lr
             clf_train_losses.append(clf_train_loss)
             clf_val_losses.append(clf_val_loss)
 
-            print(str(epoch) + ": ", clf_train_loss, clf_val_loss)
+            if logging:
+                print(str(epoch) + ": ", clf_train_loss, clf_val_loss)
 
             if clf_early_stopper.early_stop(clf_val_loss):
                 break
 
-        metrics = validate(roberta, clone, query_standard_dataloader, clf)
-        print("Metrics: " + str(metrics))
+        labels, preds = validate(roberta, clone, query_standard_dataloader, clf)
+        result = metrics(labels, preds, min(model_val_losses), min(clf_val_losses))
+        results.append(result)
 
-        print("---")
+        if logging:
+            print(result)
+            print("---")
+
+    return results
 
 
 def train_model(roberta, model, optimiser, dataloader, criterion, loss_type="triplet"):
@@ -207,6 +231,7 @@ def train_model(roberta, model, optimiser, dataloader, criterion, loss_type="tri
         if loss_type == "triplet":
             anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask = batch
             
+            # with torch.autocast(device_type=DEVICE):
             with torch.no_grad():
                 anchor_emb = roberta(anchor_input_ids, anchor_attention_mask).last_hidden_state
                 positive_emb = roberta(positive_input_ids, positive_attention_mask).last_hidden_state
@@ -246,33 +271,33 @@ def validate_model(roberta, model, dataloader, criterion, loss_type):
     total_loss = 0.0
 
     for batch in dataloader:
+        with torch.no_grad():
+            if loss_type == "triplet":
+                anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask = batch
+                
+                anchor_emb = roberta(anchor_input_ids, anchor_attention_mask).last_hidden_state
+                positive_emb = roberta(positive_input_ids, positive_attention_mask).last_hidden_state
+                negative_emb = roberta(negative_input_ids, negative_attention_mask).last_hidden_state
 
-        if loss_type == "triplet":
-            anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask = batch
+                anchor_emb = model(anchor_emb, anchor_attention_mask)
+                positive_emb = model(positive_emb, positive_attention_mask)
+                negative_emb = model(negative_emb, negative_attention_mask)
+
+                loss = criterion(anchor_emb, positive_emb, negative_emb)
             
-            anchor_emb = roberta(anchor_input_ids, anchor_attention_mask).last_hidden_state
-            positive_emb = roberta(positive_input_ids, positive_attention_mask).last_hidden_state
-            negative_emb = roberta(negative_input_ids, negative_attention_mask).last_hidden_state
+            elif loss_type == "contrastive":
+                anchor_input_ids, anchor_attention_mask, query_input_ids, query_attention_mask, labels = batch
 
-            anchor_emb = model(anchor_emb, anchor_attention_mask)
-            positive_emb = model(positive_emb, positive_attention_mask)
-            negative_emb = model(negative_emb, negative_attention_mask)
+                anchor_emb = roberta(anchor_input_ids, anchor_attention_mask).last_hidden_state
+                query_emb = roberta(query_input_ids, query_attention_mask).last_hidden_state
 
-            loss = criterion(anchor_emb, positive_emb, negative_emb)
-        
-        elif loss_type == "contrastive":
-            anchor_input_ids, anchor_attention_mask, query_input_ids, query_attention_mask, labels = batch
+                anchor_emb = model(anchor_emb, anchor_attention_mask)
+                query_emb = model(query_emb, query_attention_mask)
 
-            anchor_emb = roberta(anchor_input_ids, anchor_attention_mask).last_hidden_state
-            query_emb = roberta(query_input_ids, query_attention_mask).last_hidden_state
+                loss = criterion(anchor_emb, query_emb, labels)
 
-            anchor_emb = model(anchor_emb, anchor_attention_mask)
-            query_emb = model(query_emb, query_attention_mask)
-
-            loss = criterion(anchor_emb, query_emb, labels)
-
-        else:
-            raise ValueError("invalid loss type")
+            else:
+                raise ValueError("invalid loss type")
 
         total_loss += loss.item()
 
@@ -310,10 +335,11 @@ def validate_classifier(roberta, model, classifier, dataloader, criterion):
 
     for batch in dataloader:
         input_ids, attention_mask, labels = batch
-        roberta_embeddings = roberta(input_ids, attention_mask).last_hidden_state
-        model_embeddings = model(roberta_embeddings, attention_mask)
-        logits = classifier(model_embeddings)
-        loss = criterion(logits.float(), labels.unsqueeze(1).float())
+        with torch.no_grad():
+            roberta_embeddings = roberta(input_ids, attention_mask).last_hidden_state
+            model_embeddings = model(roberta_embeddings, attention_mask)
+            logits = classifier(model_embeddings)
+            loss = criterion(logits.float(), labels.unsqueeze(1).float())
         total_loss += loss.item()
 
     avg_loss = total_loss / len(dataloader)
@@ -340,14 +366,15 @@ def validate(roberta, model, dataloader, classifier):
     all_labels = torch.cat(all_labels)
     all_preds = torch.cat(all_preds)
 
-    result = metrics(all_labels, all_preds)
-    return result
+    return all_labels, all_preds
 
-def metrics(labels, preds):
+def metrics(labels, preds, best_model_val_loss, best_clf_val_loss):
     labels = labels.cpu()
     preds = preds.cpu()
     result = {
         # 'train_loss': train_loss_sum,
+        'best_model_val_loss': best_model_val_loss,
+        'best_clf_val_loss': best_clf_val_loss,
         'accuracy': accuracy_score(labels, preds),
         'precision': precision_score(labels, preds, zero_division=0),
         'recall': recall_score(labels, preds, zero_division=0),
@@ -368,7 +395,7 @@ task_distribution = TaskDistribution(
     stats=stats,
     device=DEVICE,
     puppetmaster=True,
-    max_tasks=None,
+    max_tasks=10,
     min_puppetmaster=5,
     min_sockpuppet=5,
     min_ratio=1,
@@ -383,29 +410,40 @@ train_distribution, test_distribution = torch.utils.data.random_split(
     generator=gen
 )
 
+def single_exp():
+    model = EncoderModel(768, 4, 2).to(DEVICE)
+    # model = BiLSTMModel(768, int(768/2), 6).to(DEVICE)
+    # model = RobertaPooler()
+    model_criterion = nn.TripletMarginLoss(margin=0.2)
+    model_criterion = nn.TripletMarginWithDistanceLoss(distance_function=nn.CosineSimilarity(), margin=0.2)
+    model_epochs = 10
+    model_lr = 1e-4
+    classifier = ClassificationHead(768, 128).to(DEVICE)
+    classifier_criterion = nn.BCEWithLogitsLoss()#pos_weight=torch.tensor(0.5))
+    classifier_epochs = 10
+    classifier_lr = 1e-3
+    experiment(train_distribution, model, model_criterion, model_epochs, model_lr, classifier, classifier_criterion, classifier_epochs, classifier_lr, "triplet", logging=True)
+
+def model_objective(trial):
+    model_lr = trial.suggest_float('model_lr', 1e-6, 1e-3)
 
 
+    model = EncoderModel(768, 8, 6).to(DEVICE)
+    model_criterion = nn.TripletMarginLoss(margin=0.2)
+    model_criterion = nn.TripletMarginWithDistanceLoss(distance_function=nn.CosineSimilarity(), margin=0.2)
+    model_epochs = 5
+    
+    classifier = ClassificationHead(768, 128).to(DEVICE)
+    classifier_criterion = nn.BCEWithLogitsLoss()#pos_weight=torch.tensor(0.5))
+    classifier_epochs = 1
+    classifier_lr = 1e-3
 
-#model = RobertaPooler()
+    results = experiment(train_distribution, model, model_criterion, model_epochs, model_lr, classifier, classifier_criterion, classifier_epochs, classifier_lr, "triplet", logging=False)
+    avg_best_model_val_loss = sum(r['best_model_val_loss'] for r in results) / len(results)
+    return avg_best_model_val_loss
 
-# criterion = ContrastiveLoss().to(DEVICE)
-# criterion = BatchAllTripletLoss().to(DEVICE)
-# exp = Experiment(test_distribution, model, criterion, optimiser, TRIPLET)
-# exp.run()
+study = optuna.create_study()
+study.optimize(model_objective, n_trials=50)
+print("Best hyperparameters: ", study.best_params)
 
-# model = EncoderModel(768, 8, 6).to(DEVICE)
-# criterion = nn.TripletMarginLoss()
-# experiment(test_distribution, model, criterion, 10, "triplet")
-
-model = EncoderModel(768, 8, 6).to(DEVICE)
-model = BiLSTMModel(768, int(768/2), 6).to(DEVICE)
-model_criterion = nn.TripletMarginLoss(margin=0.2)
-model_criterion = nn.TripletMarginWithDistanceLoss(distance_function=nn.CosineSimilarity(), margin=0.2)
-model_epochs = 10
-model_lr = 1
-classifier = ClassificationHead(768, 128).to(DEVICE)
-classifier_criterion = nn.BCEWithLogitsLoss()#pos_weight=torch.tensor(0.5))
-classifier_epochs = 10
-classifier_lr = 1e-3
-
-experiment(test_distribution, model, model_criterion, model_epochs, model_lr, classifier, classifier_criterion, classifier_epochs, classifier_lr, "triplet")
+# single_exp()
