@@ -390,20 +390,20 @@ def metrics(labels, preds): #, best_model_val_loss, best_clf_val_loss):
 
 
 def single_exp():
-    model = EncoderModel(768, 2, 5).to(DEVICE)
+    model = EncoderModel(768, 2, 3).to(DEVICE)
     # model = BiLSTMModel(768, int(768/2), 6).to(DEVICE)
     # model = RobertaPooler()
     # model_criterion = nn.TripletMarginLoss(margin=0.002)
     model_criterion = nn.TripletMarginWithDistanceLoss(
         distance_function=lambda x, y: 1 - F.cosine_similarity(x, y),
-        margin=0.002
+        margin=0.2864
     )
     model_epochs = 10
     model_lr = 0.005
-    classifier = ClassificationHead(768, 0.19).to(DEVICE)
-    classifier_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(2))
+    classifier = ClassificationHead(768, 0.13).to(DEVICE)
+    classifier_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(4.63))
     classifier_epochs = 10
-    classifier_lr = 0.019
+    classifier_lr = 0.003
     experiment(train_distribution, model, model_criterion, model_epochs, model_lr, classifier, classifier_criterion, classifier_epochs, classifier_lr, "triplet", logging=True)
 
 

@@ -9,10 +9,13 @@ class ClassificationHead(nn.Module):
         self.input_dim = input_dim
         self.dropout = dropout
         self.drp = nn.Dropout(dropout)
-        self.fc1 = nn.Linear(self.input_dim, 408)
-        self.fc2 = nn.Linear(408, 109)
-        self.fc3 = nn.Linear(109, 681)
-        self.fc4 = nn.Linear(681, 1)
+        self.fc1 = nn.Linear(self.input_dim, 325)
+        self.fc2 = nn.Linear(325, 396)
+        self.fc3 = nn.Linear(396, 517)
+        self.fc4 = nn.Linear(517, 666)
+        self.fc5 = nn.Linear(666, 646)
+        self.fc6 = nn.Linear(646, 476)
+        self.fc7 = nn.Linear(476, 1)
 
     def forward(self, x):
         x = F.gelu(self.fc1(x))
@@ -21,7 +24,13 @@ class ClassificationHead(nn.Module):
         x = self.drp(x)
         x = F.gelu(self.fc3(x))
         x = self.drp(x)
-        x = self.fc4(x)
+        x = F.gelu(self.fc4(x))
+        x = self.drp(x)
+        x = F.gelu(self.fc5(x))
+        x = self.drp(x)
+        x = F.gelu(self.fc6(x))
+        x = self.drp(x)
+        x = self.fc7(x)
         return x
     
     def clone(self):
@@ -30,6 +39,8 @@ class ClassificationHead(nn.Module):
         if next(self.parameters()).is_cuda:
             clone.cuda()
         return clone
+
+
 
 
 class RobertaPooler(nn.Module):
