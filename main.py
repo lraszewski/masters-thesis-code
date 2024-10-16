@@ -15,14 +15,10 @@ from sklearn.metrics import fbeta_score, precision_score, recall_score, accuracy
 from scipy.interpolate import interp1d
 from tqdm import tqdm
 
-from data import TaskDistribution
 from models import ClassificationHead, RobertaPooler, EncoderModel, BiLSTMModel, EncoderClassifierModel
-from helpers import generate_stats, EarlyStopper
+from helpers import EarlyStopper, get_distributions
 from loss import ContrastiveLoss
 
-STATS_PATH = 'stats/stats.csv'
-INVESTIGATIONS_PATH = 'investigations'
-TASKS_PATH = 'all-distilroberta-v1-tokenized-128'
 DEVICE = 'cuda'
 TRIPLET = True
 
@@ -137,13 +133,12 @@ class Experiment:
 
 
 
-def experiment(task_distribution, model, model_criterion, model_epochs, model_lr, classifier, classifier_criterion, classifier_epochs, classifier_lr, loss_type, logging=False):
+def experiment(task_distribution, mdl, mdl_criterion, mdl_epochs, mdl_lr, clf, clf_criterion, clf_epochs, clf_lr, loss_type, logging=False):
     
     # instantiate a frozen roberta model
-    roberta = AutoModel.from_pretrained('sentence-transformers/all-distilroberta-v1', add_pooling_layer=False).to('cuda').eval()
-    for param in roberta.parameters():
-        param.requires_grad = False
+    roberta = get_roberta()
     
+    # keep track of results for each task
     results = []
     iterator = task_distribution
     if not logging:
@@ -158,60 +153,20 @@ def experiment(task_distribution, model, model_criterion, model_epochs, model_lr
         query_triplet_dataloader = DataLoader(query_set_triplet, batch_size=10, shuffle=True, drop_last=False)
         
         # create a clone of the model
-        clone = model.clone()
-        clone_optimiser = torch.optim.Adam(clone.parameters(), lr=model_lr)
-
-        # train model
-        
-        model_train_losses = []
-        model_val_losses = []
-        model_early_stopper = EarlyStopper(patience=2, min_delta=0.01)
-        for epoch in range(model_epochs):
-            start = time.time()
-
-            model_train_loss = train_model(roberta, clone, clone_optimiser, support_triplet_dataloader, model_criterion, loss_type)
-            model_val_loss = validate_model(roberta, model, query_triplet_dataloader, model_criterion, loss_type)
-
-            model_train_losses.append(model_train_loss)
-            model_val_losses.append(model_val_loss)
-            
-            if logging:
-                print(str(epoch) + ": ", model_train_loss, model_val_loss)
-            
-            end = time.time()
-            print(end-start)
-
-            if model_early_stopper.early_stop(model_val_loss):
-                break
-        
+        mdl_clone = mdl.clone()
+        mdl_optimiser = torch.optim.Adam(mdl_clone.parameters(), lr=mdl_lr)
+        model_loop(roberta, mdl_clone, mdl_optimiser, mdl_criterion, support_triplet_dataloader, query_triplet_dataloader, mdl_epochs, loss_type, logging)
 
         if logging:
             print("")
 
         # create a classifier
-        clf = classifier.clone()
-        clf_optimiser = torch.optim.Adam(clf.parameters(), lr=classifier_lr)
-
-        # train classifier
-        clf_train_losses = []
-        clf_val_losses = []
-        clf_early_stopper = EarlyStopper(patience=2, min_delta=0.1)
-        for epoch in range(classifier_epochs):
-
-            clf_train_loss = train_classifier(roberta, clone, clf, clf_optimiser, support_standard_dataloader, classifier_criterion)            
-            clf_val_loss = validate_classifier(roberta, model, clf, query_standard_dataloader, classifier_criterion)
-
-            clf_train_losses.append(clf_train_loss)
-            clf_val_losses.append(clf_val_loss)
-
-            if logging:
-                print(str(epoch) + ": ", clf_train_loss, clf_val_loss)
-
-            if clf_early_stopper.early_stop(clf_val_loss):
-                break
-
-        labels, preds = validate(roberta, clone, query_standard_dataloader, clf)
-        result = metrics(labels, preds, min(model_val_losses), min(clf_val_losses))
+        clf_clone = clf.clone()
+        clf_optimiser = torch.optim.Adam(clf_clone.parameters(), lr=clf_lr)
+        classifier_loop(roberta, mdl_clone, clf_clone, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, clf_epochs, logging)
+        
+        labels, preds = validate(roberta, mdl_clone, query_standard_dataloader, clf_clone)
+        result = metrics(labels, preds)
         results.append(result)
 
         if logging:
@@ -220,6 +175,26 @@ def experiment(task_distribution, model, model_criterion, model_epochs, model_lr
 
     return results
 
+
+def model_loop(roberta, model, optimiser, criterion, support_dataloader, query_dataloader, epochs, loss_type, logging):
+    train_losses = []
+    val_losses = []
+    early_stopper = EarlyStopper(patience=2, min_delta=0.01)
+    for epoch in range(epochs):
+
+        train_loss = train_model(roberta, model, optimiser, support_dataloader, criterion, loss_type)
+        val_loss = validate_model(roberta, model, query_dataloader, criterion, loss_type)
+
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        
+        if logging:
+            print(str(epoch) + ": ", train_loss, val_loss)
+
+        if early_stopper.early_stop(val_loss):
+            break
+    
+    return min(val_losses)
 
 def train_model(roberta, model, optimiser, dataloader, criterion, loss_type="triplet"):
     model.train()
@@ -305,6 +280,27 @@ def validate_model(roberta, model, dataloader, criterion, loss_type):
     return avg_loss
 
 
+def classifier_loop(roberta, model, classifier, optimiser, criterion, support_dataloader, query_dataloader, epochs, logging):
+
+    train_losses = []
+    val_losses = []
+    early_stopper = EarlyStopper(patience=2, min_delta=0.1)
+    for epoch in range(epochs):
+
+        train_loss = train_classifier(roberta, model, classifier, optimiser, support_dataloader, criterion)            
+        val_loss = validate_classifier(roberta, model, classifier, query_dataloader, criterion)
+
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+
+        if logging:
+            print(str(epoch) + ": ", train_loss, val_loss)
+
+        if early_stopper.early_stop(val_loss):
+            break
+    
+    return min(val_losses)
+
 def train_classifier(roberta, model, classifier, optimiser, dataloader, criterion):
     model.eval()
     classifier.train()
@@ -345,6 +341,11 @@ def validate_classifier(roberta, model, classifier, dataloader, criterion):
     avg_loss = total_loss / len(dataloader)
     return avg_loss
 
+def get_roberta():
+    roberta = AutoModel.from_pretrained('sentence-transformers/all-distilroberta-v1', add_pooling_layer=False).to('cuda').eval()
+    for param in roberta.parameters():
+        param.requires_grad = False
+    return roberta
 
 def validate(roberta, model, dataloader, classifier):
     model.eval()
@@ -368,13 +369,13 @@ def validate(roberta, model, dataloader, classifier):
 
     return all_labels, all_preds
 
-def metrics(labels, preds, best_model_val_loss, best_clf_val_loss):
+def metrics(labels, preds): #, best_model_val_loss, best_clf_val_loss):
     labels = labels.cpu()
     preds = preds.cpu()
     result = {
         # 'train_loss': train_loss_sum,
-        'best_model_val_loss': best_model_val_loss,
-        'best_clf_val_loss': best_clf_val_loss,
+        #'best_model_val_loss': best_model_val_loss,
+        #'best_clf_val_loss': best_clf_val_loss,
         'accuracy': accuracy_score(labels, preds),
         'precision': precision_score(labels, preds, zero_division=0),
         'recall': recall_score(labels, preds, zero_division=0),
@@ -386,64 +387,26 @@ def metrics(labels, preds, best_model_val_loss, best_clf_val_loss):
     return result
 
 
-if not os.path.exists(STATS_PATH):
-    generate_stats(INVESTIGATIONS_PATH)
-stats = pd.read_csv(STATS_PATH)
 
-task_distribution = TaskDistribution(
-    directory=TASKS_PATH,
-    stats=stats,
-    device=DEVICE,
-    puppetmaster=True,
-    max_tasks=10,
-    min_puppetmaster=5,
-    min_sockpuppet=5,
-    min_ratio=1,
-    split_ratio=0.8
-)
-
-gen = torch.Generator().manual_seed(64)
-train_size = int(0.9 * len(task_distribution))
-test_size = len(task_distribution) - train_size
-train_distribution, test_distribution = torch.utils.data.random_split(
-    task_distribution, [train_size, test_size],
-    generator=gen
-)
 
 def single_exp():
-    model = EncoderModel(768, 4, 2).to(DEVICE)
+    model = EncoderModel(768, 2, 5).to(DEVICE)
     # model = BiLSTMModel(768, int(768/2), 6).to(DEVICE)
     # model = RobertaPooler()
-    model_criterion = nn.TripletMarginLoss(margin=0.2)
-    model_criterion = nn.TripletMarginWithDistanceLoss(distance_function=nn.CosineSimilarity(), margin=0.2)
+    # model_criterion = nn.TripletMarginLoss(margin=0.002)
+    model_criterion = nn.TripletMarginWithDistanceLoss(
+        distance_function=lambda x, y: 1 - F.cosine_similarity(x, y),
+        margin=0.002
+    )
     model_epochs = 10
-    model_lr = 1e-4
-    classifier = ClassificationHead(768, 128).to(DEVICE)
-    classifier_criterion = nn.BCEWithLogitsLoss()#pos_weight=torch.tensor(0.5))
+    model_lr = 0.005
+    classifier = ClassificationHead(768, 0.19).to(DEVICE)
+    classifier_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(2))
     classifier_epochs = 10
-    classifier_lr = 1e-3
+    classifier_lr = 0.019
     experiment(train_distribution, model, model_criterion, model_epochs, model_lr, classifier, classifier_criterion, classifier_epochs, classifier_lr, "triplet", logging=True)
 
-def model_objective(trial):
-    model_lr = trial.suggest_float('model_lr', 1e-6, 1e-3)
 
-
-    model = EncoderModel(768, 8, 6).to(DEVICE)
-    model_criterion = nn.TripletMarginLoss(margin=0.2)
-    model_criterion = nn.TripletMarginWithDistanceLoss(distance_function=nn.CosineSimilarity(), margin=0.2)
-    model_epochs = 5
-    
-    classifier = ClassificationHead(768, 128).to(DEVICE)
-    classifier_criterion = nn.BCEWithLogitsLoss()#pos_weight=torch.tensor(0.5))
-    classifier_epochs = 1
-    classifier_lr = 1e-3
-
-    results = experiment(train_distribution, model, model_criterion, model_epochs, model_lr, classifier, classifier_criterion, classifier_epochs, classifier_lr, "triplet", logging=False)
-    avg_best_model_val_loss = sum(r['best_model_val_loss'] for r in results) / len(results)
-    return avg_best_model_val_loss
-
-study = optuna.create_study()
-study.optimize(model_objective, n_trials=50)
-print("Best hyperparameters: ", study.best_params)
-
-# single_exp()
+if __name__ == '__main__':
+    train_distribution, test_distribution = get_distributions()
+    single_exp()
