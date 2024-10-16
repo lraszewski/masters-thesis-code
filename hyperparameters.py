@@ -146,7 +146,7 @@ def classifier_objective(trial, models):
     
 
 def tune_classifier():
-    study = optuna.create_study(study_name="classifier_hyperparameters") #direction="maximize"
+    study = optuna.create_study(study_name="classifier_hyperparameters", direction="maximize") #direction="maximize"
     models = train_models_for_inference(train_distribution)
     study.optimize(lambda trial: classifier_objective(trial, models), n_trials=50, callbacks=[log_tune_result])
     print("Best classifier hyperparameters: ", study.best_params)
