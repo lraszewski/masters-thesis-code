@@ -103,10 +103,11 @@ def classifier_objective(trial, models):
     dropout = trial.suggest_float('dropout', 0.0, 1.0)
     reduction = trial.suggest_categorical("reduction", ["mean", "sum"])
     n_layers = trial.suggest_int('n_layers', 1, 6)
+    pos_weight = trial.suggest_float('pos_weight', 0.5, 5.0)
 
     # constants
     roberta = get_roberta()
-    clf_criterion = nn.BCEWithLogitsLoss(reduction=reduction, pos_weight=torch.tensor(2))
+    clf_criterion = nn.BCEWithLogitsLoss(reduction=reduction, pos_weight=torch.tensor(pos_weight))
     
     # design classifier
     layers = []
@@ -120,6 +121,7 @@ def classifier_objective(trial, models):
     layers.append(torch.nn.Linear(in_features, 1))
     
     losses = []
+    results = []
     for i, (support_set_standard, support_set_triplet, query_set_standard, query_set_triplet) in tqdm(enumerate(train_distribution)):
         
         # grab the model
@@ -132,10 +134,15 @@ def classifier_objective(trial, models):
         clf = torch.nn.Sequential(*copy.deepcopy(layers)).to(torch.device(DEVICE))
         clf_optimiser = torch.optim.Adam(clf.parameters(), lr=clf_lr)
 
-        loss = classifier_loop(roberta, mdl, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, 10, False)
+        loss = classifier_loop(roberta, mdl, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, 2, False)
         losses.append(loss)
-    
-    return sum(losses) / len(losses)
+
+        labels, preds = validate(roberta, mdl, query_standard_dataloader, clf)
+        result = metrics(labels, preds)
+        results.append(result)
+
+    # return sum(losses) / len(losses)
+    return sum([r['f0.5'] for r in results]) / len(results)
     
 
 def tune_classifier():
