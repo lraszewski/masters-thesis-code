@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import copy
 from tqdm import tqdm
 
-from main import get_roberta, model_loop, classifier_loop, validate, metrics
+from main import get_roberta, model_loop, classifier_loop, validate, metrics, experiment
 from models import EncoderModel, ClassificationHead
 from helpers import get_distributions
 from torch.utils.data import DataLoader
@@ -151,8 +151,71 @@ def tune_classifier():
     study.optimize(lambda trial: classifier_objective(trial, models), n_trials=50, callbacks=[log_tune_result])
     print("Best classifier hyperparameters: ", study.best_params)
 
+def dual_objective(trial):
+
+    # classifier tuning parameters
+    clf_lr = trial.suggest_float('clf_lr', 1e-5, 1e-1)
+    dropout = trial.suggest_float('dropout', 0.0, 1.0)
+    reduction = trial.suggest_categorical("reduction", ["mean", "sum"])
+    n_layers = trial.suggest_int('n_layers', 1, 6)
+    pos_weight = trial.suggest_float('pos_weight', 0.5, 5.0)
+
+    # model tuning parameters
+    mdl_lr = trial.suggest_float('model_lr', 1e-5, 1e-2)
+    nhead = trial.suggest_int('nhead', 2, 8, step=2)
+    num_layers = trial.suggest_int('num_layers', 2, 8)
+    margin = trial.suggest_float('margin', 0.0, 1.0)
+
+    # design model
+    mdl = EncoderModel(768, nhead, num_layers).to(DEVICE)
+    mdl_criterion = nn.TripletMarginWithDistanceLoss(
+        distance_function=lambda x, y: 1 - F.cosine_similarity(x, y),
+        margin=margin
+    )
+    mdl_epochs = 2
+
+    # design classifier
+    layers = []
+    in_features = 768
+    for i in range(n_layers):
+        out_features = trial.suggest_int(f'n_units_l{i}', 4, 768)
+        layers.append(torch.nn.Linear(in_features, out_features))
+        layers.append(torch.nn.GELU())
+        layers.append(torch.nn.Dropout(dropout))
+        in_features = out_features
+    layers.append(torch.nn.Linear(in_features, 1))
+    clf_criterion = nn.BCEWithLogitsLoss(reduction=reduction, pos_weight=torch.tensor(pos_weight))
+    clf_epochs = 5
+
+    class Clf(nn.Module):
+
+        def __init__(self):
+            super().__init__()
+            self.seq = torch.nn.Sequential(*copy.deepcopy(layers)).to(torch.device(DEVICE))
+        
+        def forward(self, x):
+            return self.seq(x)
+        
+        def clone(self):
+            clone = Clf()
+            clone.load_state_dict(self.state_dict())
+            if next(self.parameters()).is_cuda:
+                clone.cuda()
+            return clone
+
+    clf = Clf()
+
+    results = experiment(train_distribution, mdl, mdl_criterion, mdl_epochs, mdl_lr, clf, clf_criterion, clf_epochs, clf_lr, loss_type="triplet", logging=False)
+    return sum([r['f0.5'] for r in results]) / len(results)
+
+def tune_dual():
+    study = optuna.create_study(study_name="dual_hyperparameters", direction="maximize") #direction="maximize"
+    study.optimize(lambda trial: dual_objective(trial), n_trials=50, callbacks=[log_tune_result])
+    print("Best hyperparameters: ", study.best_params)
+
 if __name__ == '__main__':
     train_distribution, test_distribution = get_distributions(max_tasks=10)
 
     # tune_model()
-    tune_classifier()
+    # tune_classifier()
+    tune_dual()
