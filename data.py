@@ -2,6 +2,7 @@ import torch
 import pandas as pd
 import numpy as np
 import ast
+import os
 from torch.utils.data import Dataset
 from os.path import join
 
@@ -112,6 +113,10 @@ class TaskDistribution(Dataset):
         self.puppetmaster = puppetmaster
         self.split_ratio = split_ratio
 
+        self.min_puppetmaster = min_puppetmaster
+        self.min_sockpuppet = min_sockpuppet
+        self.min_ratio = min_ratio
+
         stats = stats[stats['num_puppetmaster'] >= min_puppetmaster]
         stats = stats[stats['num_sockpuppets'] >= min_sockpuppet]
         stats = stats[stats['num_negatives'] >= stats['num_positives'] * min_ratio]
@@ -130,6 +135,7 @@ class TaskDistribution(Dataset):
     
     def __getitem__(self, index):
         fn = self.tasks[index]
+        print("task:", fn)
         data = pd.read_csv(fn, lineterminator='\n')
         data = data.sample(frac=1, random_state=64).reset_index(drop=True)
 
@@ -142,11 +148,11 @@ class TaskDistribution(Dataset):
             sockpuppet_samples = data[data['label'] == 1]
             negatives = data[data['label'] == 2]
 
-            if (len(puppetmaster_samples) < 1):
+            if (len(puppetmaster_samples) < self.min_puppetmaster):
                 raise ValueError(f'{fn}: insufficient puppetmaster samples')
-            if (len(sockpuppet_samples) < 1):
+            if (len(sockpuppet_samples) < self.min_sockpuppet):
                 raise ValueError(f'{fn}: insufficient sockpuppet samples')
-            if (len(negatives) < 2):
+            if (len(negatives) < (len(sockpuppet_samples) + len(puppetmaster_samples)) * self.min_ratio):
                 raise ValueError(f'{fn}: insufficient negative samples')
 
             ratio = len(puppetmaster_samples) / (len(puppetmaster_samples) + len(sockpuppet_samples))
