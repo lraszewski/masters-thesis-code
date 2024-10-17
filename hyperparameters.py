@@ -7,7 +7,7 @@ import copy
 from tqdm import tqdm
 
 from main import get_roberta, model_loop, classifier_loop, validate, metrics, experiment
-from models import EncoderModel, ClassificationHead
+from models import EncoderModel, ClassificationHead, RobertaPooler
 from helpers import get_distributions
 from torch.utils.data import DataLoader
 
@@ -134,7 +134,7 @@ def classifier_objective(trial, models):
         clf = torch.nn.Sequential(*copy.deepcopy(layers)).to(torch.device(DEVICE))
         clf_optimiser = torch.optim.Adam(clf.parameters(), lr=clf_lr)
 
-        loss = classifier_loop(roberta, mdl, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, 2, False)
+        loss = classifier_loop(roberta, mdl, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, 5, False)
         losses.append(loss)
 
         labels, preds = validate(roberta, mdl, query_standard_dataloader, clf)
@@ -213,9 +213,16 @@ def tune_dual():
     study.optimize(lambda trial: dual_objective(trial), n_trials=50, callbacks=[log_tune_result])
     print("Best hyperparameters: ", study.best_params)
 
+def tune_roberta_classifier():
+    study = optuna.create_study(study_name="roberta_classifier_hyperparameters", direction="maximize")
+    models = [RobertaPooler() for _ in range(len(train_distribution))]
+    study.optimize(lambda trial: classifier_objective(trial, models), n_trials=50, callbacks=[log_tune_result])
+    print("Best hyperparameters: ", study.best_params)
+
 if __name__ == '__main__':
     train_distribution, test_distribution = get_distributions(max_tasks=10)
 
     # tune_model()
     # tune_classifier()
-    tune_dual()
+    # tune_dual()
+    tune_roberta_classifier()
