@@ -41,8 +41,6 @@ class ClassificationHead(nn.Module):
         return clone
 
 
-
-
 class RobertaPooler(nn.Module):
 
     def __init__(self):
@@ -56,6 +54,38 @@ class RobertaPooler(nn.Module):
     
     def clone(self):
         return RobertaPooler()
+    
+class RobertaClassifier(nn.Module):
+
+    def __init__(self, input_dim, dropout=0.0):
+        super().__init__()
+        self.input_dim = input_dim
+        self.dropout = dropout
+        self.drp = nn.Dropout(dropout)
+        self.fc1 = nn.Linear(self.input_dim, 260)
+        self.fc2 = nn.Linear(260, 11)
+        self.fc3 = nn.Linear(11, 738)
+        self.fc4 = nn.Linear(738, 611)
+        self.fc5 = nn.Linear(611, 1)
+
+    def forward(self, x):
+        x = F.gelu(self.fc1(x))
+        x = self.drp(x)
+        x = F.gelu(self.fc2(x))
+        x = self.drp(x)
+        x = F.gelu(self.fc3(x))
+        x = self.drp(x)
+        x = F.gelu(self.fc4(x))
+        x = self.drp(x)
+        x = self.fc5(x)
+        return x
+    
+    def clone(self):
+        clone = RobertaClassifier(self.input_dim, self.dropout)
+        clone.load_state_dict(self.state_dict())
+        if next(self.parameters()).is_cuda:
+            clone.cuda()
+        return clone
     
 
 class EncoderModel(nn.Module):
