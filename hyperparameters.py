@@ -3,16 +3,47 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchmetrics.functional.classification import binary_auroc
 import copy
-from tqdm import tqdm
 
-from main import get_roberta, model_loop, classifier_loop, validate, metrics, experiment
-from models import EncoderModel, ClassificationHead, RobertaPooler
-from helpers import get_distributions
+from main import model_loop, classifier_loop, validate
+from models import EncoderModel
+from helpers import get_distributions, get_roberta, get_batch_size
 from torch.utils.data import DataLoader
 
 DEVICE = 'cuda'
+EPOCHS = 10
 
+# given a trial, return suggested parameters for the model
+def suggest_model_parameters(trial):
+    mdl_lr = trial.suggest_float('mdl_lr', 1e-5, 1e-2)
+    mdl_n_heads = trial.suggest_int('mdl_n_heads', 2, 8, step=2)
+    mdl_n_layers = trial.suggest_int('mdl_n_layers', 2, 8)
+    mdl_margin = trial.suggest_float('mdl_margin', 0.0, 1.0)
+    return mdl_lr, mdl_n_heads, mdl_n_layers, mdl_margin
+
+# given a trial, return suggested parameters for the classifier
+def suggest_classifier_parameters(trial):
+    clf_lr = trial.suggest_float('clf_lr', 1e-5, 1e-1)
+    clf_dropout = trial.suggest_float('clf_dropout', 0.0, 1.0)
+    clf_n_layers = trial.suggest_int('clf_n_layers', 1, 6)
+    clf_pos_weight = trial.suggest_float('clf_pos_weight', 0.5, 5.0)
+    return clf_lr, clf_dropout, clf_n_layers, clf_pos_weight
+
+# given a trial, n_layers and dropout, return a set of classifier layers
+def design_classifier(trial, clf_n_layers, clf_dropout):
+    layers = []
+    in_features = 768
+    for i in range(clf_n_layers):
+        out_features = trial.suggest_int(f'clf_n_units_l{i}', 4, 768)
+        layers.append(torch.nn.Linear(in_features, out_features))
+        layers.append(torch.nn.GELU())
+        layers.append(torch.nn.Dropout(clf_dropout))
+        in_features = out_features
+    layers.append(torch.nn.Linear(in_features, 1))
+    return layers
+
+# given a study and completed trial, log the result of the trial
 def log_tune_result(study, trial):
     trial_data = {
         "trial_number": trial.number,
@@ -23,206 +54,105 @@ def log_tune_result(study, trial):
     fn = "results/" + study.study_name + ".csv"
     results_df.to_csv(fn, mode='a', header=not pd.io.common.file_exists(fn), index=False)
 
-def model_objective(trial):
+# objective function to tune the embedding and classifier models
+def dual_objective(trial, train_distribution):
 
-    # tuning parameters
-    mdl_lr = trial.suggest_float('model_lr', 1e-5, 1e-2)
-    nhead = trial.suggest_int('nhead', 2, 8, step=2)
-    num_layers = trial.suggest_int('num_layers', 2, 8)
-    margin = trial.suggest_float('margin', 0.0, 1.0)
+    # classifier tuned parameters
+    clf_lr, clf_dropout, clf_n_layers, clf_pos_weight = suggest_classifier_parameters(trial)
+    clf_layers = design_classifier(trial, clf_n_layers, clf_dropout)
+    clf_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(clf_pos_weight))
 
-    # constant parameters
-    roberta = get_roberta()
-    mdl = EncoderModel(768, nhead, num_layers).to(DEVICE)
-    mdl_criterion = nn.TripletMarginWithDistanceLoss(
-        distance_function=lambda x, y: 1 - F.cosine_similarity(x, y),
-        margin=margin
-    )
-    mdl_epochs = 2
-    loss_type = "triplet"
-    logging = False
-
-    losses = []
-    for support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in tqdm(train_distribution):
-        
-        support_triplet_dataloader = DataLoader(support_set_triplet, batch_size=10, shuffle=True, drop_last=True)
-        query_triplet_dataloader = DataLoader(query_set_triplet, batch_size=10, shuffle=True, drop_last=False)
-        
-        # create a clone of the model
-        mdl_clone = mdl.clone()
-        mdl_optimiser = torch.optim.Adam(mdl_clone.parameters(), lr=mdl_lr)
-        loss = model_loop(roberta, mdl_clone, mdl_optimiser, mdl_criterion, support_triplet_dataloader, query_triplet_dataloader, mdl_epochs, loss_type, logging)
-        losses.append(loss)
-    
-    return sum(losses) / len(losses)
-
-def tune_model():
-    study = optuna.create_study(study_name="model_hyperparameters")
-    study.optimize(model_objective, n_trials=50, callbacks=[log_tune_result])
-    print("Best model hyperparameters: ", study.best_params)
-
-def train_models_for_inference(train_distribution):
-
-    # hyper params
-    nhead = 2
-    num_layers = 6
-    margin = 0.001
-    mdl_lr = 0.005
-    mdl_epochs = 10
-
-    # setup
-    roberta = get_roberta()
-    mdl = EncoderModel(768, nhead, num_layers).to(DEVICE)
-    mdl_criterion = nn.TripletMarginWithDistanceLoss(
-        distance_function=lambda x, y: 1 - F.cosine_similarity(x, y),
-        margin=margin
-    )
-    loss_type = "triplet"
-    logging = False
-
-    # train
-    mdls = []
-    for support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in tqdm(train_distribution, desc="training embedding models"):
-        
-        support_triplet_dataloader = DataLoader(support_set_triplet, batch_size=10, shuffle=True, drop_last=True)
-        query_triplet_dataloader = DataLoader(query_set_triplet, batch_size=10, shuffle=True, drop_last=False)
-        mdl_clone = mdl.clone()
-        mdl_optimiser = torch.optim.Adam(mdl_clone.parameters(), lr=mdl_lr)
-        loss = model_loop(roberta, mdl_clone, mdl_optimiser, mdl_criterion, support_triplet_dataloader, query_triplet_dataloader, mdl_epochs, loss_type, logging)
-        mdl_clone.eval()
-        mdls.append(mdl_clone)
-    
-    return mdls
-
-
-
-def classifier_objective(trial, models):
-
-    # tuning parameters
-    clf_lr = trial.suggest_float('clf_lr', 1e-5, 1e-1)
-    dropout = trial.suggest_float('dropout', 0.0, 1.0)
-    reduction = trial.suggest_categorical("reduction", ["mean", "sum"])
-    n_layers = trial.suggest_int('n_layers', 1, 6)
-    pos_weight = trial.suggest_float('pos_weight', 0.5, 5.0)
+    # model tuned parameters
+    mdl_lr, mdl_n_heads, mdl_n_layers, mdl_margin = suggest_model_parameters(trial)
+    mdl = EncoderModel(768, mdl_n_heads, mdl_n_layers).to(DEVICE)
+    mdl_criterion = nn.TripletMarginWithDistanceLoss(distance_function=lambda x, y: 1 - F.cosine_similarity(x, y),margin=mdl_margin)
 
     # constants
     roberta = get_roberta()
-    clf_criterion = nn.BCEWithLogitsLoss(reduction=reduction, pos_weight=torch.tensor(pos_weight))
+    clf_epochs = EPOCHS
+    mdl_epochs = EPOCHS
+
+    aurocs = []
+    for support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in train_distribution:
+
+        # create necessary dataloaders
+        support_standard_batch_size = get_batch_size(len(support_set_standard))
+        support_triplet_batch_size = get_batch_size(len(support_set_triplet))
+        query_standard_batch_size = get_batch_size(len(query_set_standard))
+        query_triplet_batch_size = get_batch_size(len(query_set_triplet))
+        support_standard_dataloader = DataLoader(support_set_standard, batch_size=support_standard_batch_size, shuffle=True, drop_last=True)
+        support_triplet_dataloader = DataLoader(support_set_triplet, batch_size=support_triplet_batch_size, shuffle=True, drop_last=True)
+        query_standard_dataloader = DataLoader(query_set_standard, batch_size=query_standard_batch_size, shuffle=False, drop_last=False)
+        query_triplet_dataloader = DataLoader(query_set_triplet, batch_size=query_triplet_batch_size, shuffle=False, drop_last=False)
+
+        # create model, classifier and optimisers
+        mdl_clone = mdl.clone()
+        mdl_optimiser = torch.optim.SGD(mdl_clone.parameters(), lr=mdl_lr)
+        clf = torch.nn.Sequential(*copy.deepcopy(clf_layers)).to(torch.device(DEVICE))
+        clf_optimiser = torch.optim.SGD(clf.parameters(), lr=clf_lr)
+
+        # train
+        mdl_loss = model_loop(roberta, mdl_clone, mdl_optimiser, mdl_criterion, support_triplet_dataloader, query_triplet_dataloader, mdl_epochs, loss_type="triplet", logging=True)
+        clf_loss = classifier_loop(roberta, mdl_clone, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, clf_epochs, logging=True)
+
+        # test
+        labels, probs = validate(roberta, mdl_clone, query_standard_dataloader, clf)
+        auroc = binary_auroc(probs, labels, thresholds=None)
+        aurocs.append(auroc.item())
     
-    # design classifier
-    layers = []
-    in_features = 768
-    for i in range(n_layers):
-        out_features = trial.suggest_int(f'n_units_l{i}', 4, 768)
-        layers.append(torch.nn.Linear(in_features, out_features))
-        layers.append(torch.nn.GELU())
-        layers.append(torch.nn.Dropout(dropout))
-        in_features = out_features
-    layers.append(torch.nn.Linear(in_features, 1))
-    
+    return sum(aurocs) / len(aurocs)
+
+# objective function to tune the classifier attached to a frozen roberta model
+def roberta_classifier_objective(trial, train_distribution):
+
+    # tuned parameters
+    clf_lr, clf_dropout, clf_n_layers, clf_pos_weight = suggest_classifier_parameters(trial)
+    clf_layers = design_classifier(trial, clf_n_layers, clf_dropout)
+    clf_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(clf_pos_weight))
+
+    # constants
+    roberta = get_roberta()
+    clf_epochs = EPOCHS
+
     losses = []
-    results = []
-    for i, (support_set_standard, support_set_triplet, query_set_standard, query_set_triplet) in tqdm(enumerate(train_distribution)):
-        
-        # grab the model
-        mdl = models[i]
+    aurocs = []
+    for support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in train_distribution:
 
-        support_standard_dataloader = DataLoader(support_set_standard, batch_size=10, shuffle=True, drop_last=True)
-        query_standard_dataloader = DataLoader(query_set_standard, batch_size=10, shuffle=True, drop_last=False)
-        
-        # create a clone of the classifier
-        clf = torch.nn.Sequential(*copy.deepcopy(layers)).to(torch.device(DEVICE))
-        clf_optimiser = torch.optim.Adam(clf.parameters(), lr=clf_lr)
+        # create necessary dataloaders
+        support_batch_size = get_batch_size(len(support_set_standard))
+        query_batch_size = get_batch_size(len(query_set_standard))
+        support_standard_dataloader = DataLoader(support_set_standard, batch_size=support_batch_size, shuffle=True, drop_last=True)
+        query_standard_dataloader = DataLoader(query_set_standard, batch_size=query_batch_size, shuffle=False, drop_last=False)
 
-        loss = classifier_loop(roberta, mdl, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, 5, False)
+        # create a classifier and optimiser
+        clf = torch.nn.Sequential(*copy.deepcopy(clf_layers)).to(torch.device(DEVICE))
+        clf_optimiser = torch.optim.SGD(clf.parameters(), lr=clf_lr)
+
+        # train
+        loss = classifier_loop(roberta, None, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, clf_epochs, False)
         losses.append(loss)
 
-        labels, preds = validate(roberta, mdl, query_standard_dataloader, clf)
-        result = metrics(labels, preds)
-        results.append(result)
+        # test
+        labels, probs = validate(roberta, None, query_standard_dataloader, clf)
+        auroc = binary_auroc(probs, labels, thresholds=None)
+        aurocs.append(auroc.item())
+        print(auroc.item())
 
-    # return sum(losses) / len(losses)
-    return sum([r['f0.5'] for r in results]) / len(results)
-    
+    return sum(aurocs) / len(aurocs)
 
-def tune_classifier():
-    study = optuna.create_study(study_name="classifier_hyperparameters", direction="maximize") #direction="maximize"
-    models = train_models_for_inference(train_distribution)
-    study.optimize(lambda trial: classifier_objective(trial, models), n_trials=50, callbacks=[log_tune_result])
-    print("Best classifier hyperparameters: ", study.best_params)
-
-def dual_objective(trial):
-
-    # classifier tuning parameters
-    clf_lr = trial.suggest_float('clf_lr', 1e-5, 1e-1)
-    dropout = trial.suggest_float('dropout', 0.0, 1.0)
-    reduction = trial.suggest_categorical("reduction", ["mean", "sum"])
-    n_layers = trial.suggest_int('n_layers', 1, 6)
-    pos_weight = trial.suggest_float('pos_weight', 0.5, 5.0)
-
-    # model tuning parameters
-    mdl_lr = trial.suggest_float('model_lr', 1e-5, 1e-2)
-    nhead = trial.suggest_int('nhead', 2, 8, step=2)
-    num_layers = trial.suggest_int('num_layers', 2, 8)
-    margin = trial.suggest_float('margin', 0.0, 1.0)
-
-    # design model
-    mdl = EncoderModel(768, nhead, num_layers).to(DEVICE)
-    mdl_criterion = nn.TripletMarginWithDistanceLoss(
-        distance_function=lambda x, y: 1 - F.cosine_similarity(x, y),
-        margin=margin
-    )
-    mdl_epochs = 2
-
-    # design classifier
-    layers = []
-    in_features = 768
-    for i in range(n_layers):
-        out_features = trial.suggest_int(f'n_units_l{i}', 4, 768)
-        layers.append(torch.nn.Linear(in_features, out_features))
-        layers.append(torch.nn.GELU())
-        layers.append(torch.nn.Dropout(dropout))
-        in_features = out_features
-    layers.append(torch.nn.Linear(in_features, 1))
-    clf_criterion = nn.BCEWithLogitsLoss(reduction=reduction, pos_weight=torch.tensor(pos_weight))
-    clf_epochs = 5
-
-    class Clf(nn.Module):
-
-        def __init__(self):
-            super().__init__()
-            self.seq = torch.nn.Sequential(*copy.deepcopy(layers)).to(torch.device(DEVICE))
-        
-        def forward(self, x):
-            return self.seq(x)
-        
-        def clone(self):
-            clone = Clf()
-            clone.load_state_dict(self.state_dict())
-            if next(self.parameters()).is_cuda:
-                clone.cuda()
-            return clone
-
-    clf = Clf()
-
-    results = experiment(train_distribution, mdl, mdl_criterion, mdl_epochs, mdl_lr, clf, clf_criterion, clf_epochs, clf_lr, loss_type="triplet", logging=False)
-    return sum([r['f0.5'] for r in results]) / len(results)
-
-def tune_dual():
-    study = optuna.create_study(study_name="dual_hyperparameters", direction="maximize") #direction="maximize"
-    study.optimize(lambda trial: dual_objective(trial), n_trials=50, callbacks=[log_tune_result])
+# tunes combination of model and classifier
+def tune_dual(train_distribution):
+    study = optuna.create_study(study_name="dual_hyperparameters", direction="maximize", storage='sqlite:///hyper-parameters/dual_hyperparameters_study.db', load_if_exists=True)
+    study.optimize(lambda trial: dual_objective(trial, train_distribution), n_trials=100, callbacks=[log_tune_result])
     print("Best hyperparameters: ", study.best_params)
 
-def tune_roberta_classifier():
-    study = optuna.create_study(study_name="roberta_classifier_hyperparameters", direction="maximize")
-    models = [RobertaPooler() for _ in range(len(train_distribution))]
-    study.optimize(lambda trial: classifier_objective(trial, models), n_trials=50, callbacks=[log_tune_result])
+# tunes a classifier for the frozen roberta model
+def tune_roberta_classifier(train_distribution):
+    study = optuna.create_study(study_name="roberta_classifier_hyperparameters", direction="maximize", storage='sqlite:///hyper-parameters/roberta_classifier_study.db', load_if_exists=True)
+    study.optimize(lambda trial: roberta_classifier_objective(trial, train_distribution), n_trials=100, callbacks=[log_tune_result])
     print("Best hyperparameters: ", study.best_params)
 
 if __name__ == '__main__':
     train_distribution, test_distribution = get_distributions(max_tasks=10)
-
-    # tune_model()
-    # tune_classifier()
-    # tune_dual()
-    tune_roberta_classifier()
+    tune_roberta_classifier(train_distribution)
+    tune_dual(train_distribution)

@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 from tqdm import tqdm
+from transformers import AutoModel
 
 from data import TaskDistribution
 
@@ -65,7 +66,7 @@ def get_distributions(max_tasks=None):
         device=DEVICE,
         puppetmaster=True,
         max_tasks=max_tasks,
-        min_puppetmaster=5,
+        min_puppetmaster=10,
         min_sockpuppet=5,
         min_ratio=1,
         split_ratio=0.8
@@ -81,27 +82,18 @@ def get_distributions(max_tasks=None):
 
     return train_distribution, test_distribution
 
-def plot_embeddings(embeddings, labels, title="Embedding Clusters", use_tsne=True):
+def get_roberta():
+    roberta = AutoModel.from_pretrained('sentence-transformers/all-distilroberta-v1', add_pooling_layer=False).to('cuda').eval()
+    for param in roberta.parameters():
+        param.requires_grad = False
+    return roberta
 
-    if use_tsne:
-        reducer = TSNE(n_components=2, random_state=42)
-    else:
-        reducer = PCA(n_components=2)
-    
-    # Project the embeddings to 2D
-    reduced_embeddings = reducer.fit_transform(embeddings)
-    
-    # Create a scatter plot
-    plt.figure(figsize=(8, 8))
-    scatter = plt.scatter(reduced_embeddings[:, 0], reduced_embeddings[:, 1], c=labels, cmap='coolwarm', alpha=0.7)
-    plt.colorbar(scatter)
-    plt.title(title)
-    plt.xlabel("Component 1")
-    plt.ylabel("Component 2")
-    plt.grid(True)
-    plt.show()
-
-
+def get_batch_size(n):
+    if n < 16: return 2
+    if n < 32: return 4
+    if n < 64: return 8
+    if n < 128: return 16
+    else: return 32
 
 
 class EarlyStopper:

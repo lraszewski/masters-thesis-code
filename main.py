@@ -16,7 +16,7 @@ from scipy.interpolate import interp1d
 from tqdm import tqdm
 
 from models import ClassificationHead, RobertaPooler, EncoderModel, BiLSTMModel, EncoderClassifierModel
-from helpers import EarlyStopper, get_distributions
+from helpers import EarlyStopper, get_distributions, get_roberta
 from loss import ContrastiveLoss
 
 DEVICE = 'cuda'
@@ -30,7 +30,6 @@ class Experiment:
         self.criterion = criterion
         self.optimiser = optimiser
         self.triplet = triplet
-        self.roberta = AutoModel.from_pretrained('sentence-transformers/all-distilroberta-v1', add_pooling_layer=False).to('cuda').eval()
         for param in self.roberta.parameters():
             param.requires_grad = False
 
@@ -302,7 +301,8 @@ def classifier_loop(roberta, model, classifier, optimiser, criterion, support_da
     return min(val_losses)
 
 def train_classifier(roberta, model, classifier, optimiser, dataloader, criterion):
-    model.eval()
+    if model:
+        model.eval()
     classifier.train()
     total_loss = 0.0
 
@@ -312,7 +312,11 @@ def train_classifier(roberta, model, classifier, optimiser, dataloader, criterio
         input_ids, attention_mask, labels = batch
         with torch.no_grad():
             roberta_embeddings = roberta(input_ids, attention_mask).last_hidden_state
-            model_embeddings = model(roberta_embeddings, attention_mask)
+            if model is None:
+                # use the roberta cls token if there is no model
+                model_embeddings = roberta_embeddings[:,0,:]
+            else:
+                model_embeddings = model(roberta_embeddings, attention_mask)
         logits = classifier(model_embeddings)
         loss = criterion(logits.float(), labels.unsqueeze(1).float())
 
@@ -325,7 +329,8 @@ def train_classifier(roberta, model, classifier, optimiser, dataloader, criterio
     return avg_loss
         
 def validate_classifier(roberta, model, classifier, dataloader, criterion):
-    model.eval()
+    if model:
+        model.eval()
     classifier.eval()
     total_loss = 0.0
 
@@ -333,7 +338,11 @@ def validate_classifier(roberta, model, classifier, dataloader, criterion):
         input_ids, attention_mask, labels = batch
         with torch.no_grad():
             roberta_embeddings = roberta(input_ids, attention_mask).last_hidden_state
-            model_embeddings = model(roberta_embeddings, attention_mask)
+            if model is None:
+                # use the roberta cls token if there is no model
+                model_embeddings = roberta_embeddings[:,0,:]
+            else:
+                model_embeddings = model(roberta_embeddings, attention_mask)
             logits = classifier(model_embeddings)
             loss = criterion(logits.float(), labels.unsqueeze(1).float())
         total_loss += loss.item()
@@ -341,33 +350,32 @@ def validate_classifier(roberta, model, classifier, dataloader, criterion):
     avg_loss = total_loss / len(dataloader)
     return avg_loss
 
-def get_roberta():
-    roberta = AutoModel.from_pretrained('sentence-transformers/all-distilroberta-v1', add_pooling_layer=False).to('cuda').eval()
-    for param in roberta.parameters():
-        param.requires_grad = False
-    return roberta
+
 
 def validate(roberta, model, dataloader, classifier):
-    model.eval()
+    if model:
+        model.eval()
     classifier.eval()
     all_labels = []
-    all_preds = []
+    all_probs = []
 
     with torch.no_grad():
         for batch in dataloader:
             input_ids, attention_mask, labels = batch
             roberta_embeddings = roberta(input_ids, attention_mask).last_hidden_state
-            model_embeddings = model(roberta_embeddings, attention_mask)
+            if model is None:
+                # use the roberta cls token if there is no model
+                model_embeddings = roberta_embeddings[:,0,:]
+            else:
+                model_embeddings = model(roberta_embeddings, attention_mask)
             logits = classifier(model_embeddings)
-            probs = torch.sigmoid(logits)
-            preds = (probs >= 0.5).int()
+            probs = torch.sigmoid(logits).flatten()
             all_labels.append(labels)
-            all_preds.append(preds)
+            all_probs.append(probs)
     
     all_labels = torch.cat(all_labels)
-    all_preds = torch.cat(all_preds)
-
-    return all_labels, all_preds
+    all_probs = torch.cat(all_probs)
+    return all_labels, all_probs
 
 def metrics(labels, preds): #, best_model_val_loss, best_clf_val_loss):
     labels = labels.cpu()
@@ -404,7 +412,7 @@ def single_exp():
     classifier_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(4.63))
     classifier_epochs = 10
     classifier_lr = 0.003
-    experiment(train_distribution, model, model_criterion, model_epochs, model_lr, classifier, classifier_criterion, classifier_epochs, classifier_lr, "triplet", logging=True)
+    results = experiment(train_distribution, model, model_criterion, model_epochs, model_lr, classifier, classifier_criterion, classifier_epochs, classifier_lr, "triplet", logging=True)
 
 
 if __name__ == '__main__':
