@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class ClassificationHead(nn.Module):
+class EncoderClassifier(nn.Module):
 
     def __init__(self, input_dim, dropout=0.0):
         super().__init__()
@@ -34,27 +34,13 @@ class ClassificationHead(nn.Module):
         return x
     
     def clone(self):
-        clone = ClassificationHead(self.input_dim, self.dropout)
+        clone = EncoderClassifier(self.input_dim, self.dropout)
         clone.load_state_dict(self.state_dict())
         if next(self.parameters()).is_cuda:
             clone.cuda()
         return clone
 
 
-class RobertaPooler(nn.Module):
-
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, embeds, attention_mask):
-        attention_mask_expanded = attention_mask.unsqueeze(-1).expand(embeds.size()).float()
-        embeds = torch.sum(embeds * attention_mask_expanded, 1) / torch.clamp(attention_mask_expanded.sum(1), min=1e-9)
-        embeds = F.normalize(embeds, p=2, dim=1)
-        return embeds
-    
-    def clone(self):
-        return RobertaPooler()
-    
 class RobertaClassifier(nn.Module):
 
     def __init__(self, input_dim, dropout=0.0):
@@ -131,25 +117,6 @@ class BiLSTMModel(nn.Module):
     
     def clone(self):
         clone = BiLSTMModel(self.input_dim, self.hidden_dim, self.num_layers)
-        clone.load_state_dict(self.state_dict())
-        if next(self.parameters()).is_cuda:
-            clone.cuda()
-        return clone
-
-
-class EncoderClassifierModel(EncoderModel):
-
-    def __init__(self, d_model, nhead, num_layers):
-        super().__init__(d_model, nhead, num_layers)
-        self.classifier = nn.Linear(d_model, 1)
-    
-    def forward(self, embeds, attention_mask):
-        embeddings = super().forward(embeds, attention_mask)
-        logits = self.classifier(embeddings)
-        return logits
-    
-    def clone(self):
-        clone = EncoderClassifierModel(self.d_model, self.nhead, self.num_layers)
         clone.load_state_dict(self.state_dict())
         if next(self.parameters()).is_cuda:
             clone.cuda()
