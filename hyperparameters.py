@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torchmetrics.functional.classification import binary_auroc
 import copy
 
-from main import model_loop, classifier_loop, validate
+from training import model_loop, classifier_loop, test
 from models import EncoderModel
 from helpers import get_distributions, get_roberta, get_batch_size
 from torch.utils.data import DataLoader
@@ -96,7 +96,7 @@ def dual_objective(trial, train_distribution):
         clf_loss = classifier_loop(roberta, mdl_clone, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, clf_epochs, logging=True)
 
         # test
-        labels, probs = validate(roberta, mdl_clone, query_standard_dataloader, clf)
+        labels, probs = test(roberta, mdl_clone, clf, query_standard_dataloader)
         auroc = binary_auroc(probs, labels, thresholds=None)
         aurocs.append(auroc.item())
     
@@ -133,7 +133,7 @@ def roberta_classifier_objective(trial, train_distribution):
         losses.append(loss)
 
         # test
-        labels, probs = validate(roberta, None, query_standard_dataloader, clf)
+        labels, probs = test(roberta, None, clf, query_standard_dataloader)
         auroc = binary_auroc(probs, labels, thresholds=None)
         aurocs.append(auroc.item())
         print(auroc.item())
