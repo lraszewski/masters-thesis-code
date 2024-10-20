@@ -98,7 +98,7 @@ def get_batch_size(n):
 
 class EarlyStopper:
 
-    def __init__(self, patience=1, min_delta=0):
+    def __init__(self, patience=3, min_delta=0):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
