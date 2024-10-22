@@ -18,12 +18,13 @@ from tqdm import tqdm
 from models import EncoderModel
 from helpers import EarlyStopper, get_distributions, get_roberta
 from loss import ContrastiveLoss
+from training import model_loop, classifier_loop, test
+from maml import maml
+from reptile import reptile
 
 DEVICE = 'cuda'
 TRIPLET = True
 
-
-        
 
 
 def experiment(task_distribution, mdl, mdl_criterion, mdl_epochs, mdl_lr, clf, clf_criterion, clf_epochs, clf_lr, loss_type, logging=False):
@@ -58,7 +59,7 @@ def experiment(task_distribution, mdl, mdl_criterion, mdl_epochs, mdl_lr, clf, c
         clf_optimiser = torch.optim.Adam(clf_clone.parameters(), lr=clf_lr)
         classifier_loop(roberta, mdl_clone, clf_clone, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, clf_epochs, logging)
         
-        labels, preds = validate(roberta, mdl_clone, query_standard_dataloader, clf_clone)
+        labels, preds = test(roberta, mdl_clone, query_standard_dataloader, clf_clone)
         result = metrics(labels, preds)
         results.append(result)
 
@@ -67,14 +68,6 @@ def experiment(task_distribution, mdl, mdl_criterion, mdl_epochs, mdl_lr, clf, c
             print("---")
 
     return results
-
-
-
-
-
-
-
-
 
 
 
@@ -115,7 +108,17 @@ def single_exp():
     classifier_lr = 0.003
     results = experiment(train_distribution, model, model_criterion, model_epochs, model_lr, classifier, classifier_criterion, classifier_epochs, classifier_lr, "triplet", logging=True)
 
+def maml_exp(task_distribution):
+    model = EncoderModel(768, 2, 6).to(DEVICE)
+    criterion = nn.TripletMarginWithDistanceLoss(distance_function=lambda x, y: 1 - F.cosine_similarity(x, y),margin=0.2)
+    maml(task_distribution, model, criterion, 5, 0.01, 0.05)
+
+def reptile_exp(task_distribution):
+    model = EncoderModel(768, 2, 6).to(DEVICE)
+    criterion = nn.TripletMarginWithDistanceLoss(distance_function=lambda x, y: 1 - F.cosine_similarity(x, y),margin=0.2)
+    reptile(task_distribution, model, criterion, 10, 0.2, 0.0001, 5)
 
 if __name__ == '__main__':
     train_distribution, test_distribution = get_distributions()
-    single_exp()
+    maml_exp(train_distribution)
+    
