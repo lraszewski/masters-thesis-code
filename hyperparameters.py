@@ -87,18 +87,19 @@ def dual_objective(trial, train_distribution):
 
         # create model, classifier and optimisers
         mdl_clone = mdl.clone()
-        mdl_optimiser = torch.optim.SGD(mdl_clone.parameters(), lr=mdl_lr)
+        mdl_optimiser = torch.optim.Adam(mdl_clone.parameters(), lr=mdl_lr)
         clf = torch.nn.Sequential(*copy.deepcopy(clf_layers)).to(torch.device(DEVICE))
-        clf_optimiser = torch.optim.SGD(clf.parameters(), lr=clf_lr)
+        clf_optimiser = torch.optim.Adam(clf.parameters(), lr=clf_lr)
 
         # train
-        mdl_loss = model_loop(roberta, mdl_clone, mdl_optimiser, mdl_criterion, support_triplet_dataloader, query_triplet_dataloader, mdl_epochs, loss_type="triplet", logging=True)
-        clf_loss = classifier_loop(roberta, mdl_clone, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, clf_epochs, logging=True)
+        mdl_loss = model_loop(roberta, mdl_clone, mdl_optimiser, mdl_criterion, support_triplet_dataloader, query_triplet_dataloader, mdl_epochs, logging=False)
+        clf_loss = classifier_loop(roberta, mdl_clone, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, clf_epochs, logging=False)
 
         # test
         labels, probs = test(roberta, mdl_clone, clf, query_standard_dataloader)
         auroc = binary_auroc(probs, labels, thresholds=None)
         aurocs.append(auroc.item())
+        print(auroc.item())
     
     return sum(aurocs) / len(aurocs)
 
@@ -126,7 +127,7 @@ def roberta_classifier_objective(trial, train_distribution):
 
         # create a classifier and optimiser
         clf = torch.nn.Sequential(*copy.deepcopy(clf_layers)).to(torch.device(DEVICE))
-        clf_optimiser = torch.optim.SGD(clf.parameters(), lr=clf_lr)
+        clf_optimiser = torch.optim.Adam(clf.parameters(), lr=clf_lr)
 
         # train
         loss = classifier_loop(roberta, None, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, clf_epochs, False)
@@ -148,11 +149,11 @@ def tune_dual(train_distribution):
 
 # tunes a classifier for the frozen roberta model
 def tune_roberta_classifier(train_distribution):
-    study = optuna.create_study(study_name="roberta_classifier_hyperparameters", direction="maximize", storage='sqlite:///hyper-parameters/roberta_classifier_study.db', load_if_exists=True)
+    study = optuna.create_study(study_name="roberta_classifier_hyperparameters_adam", direction="maximize", storage='sqlite:///hyper-parameters/roberta_classifier_adam_study.db', load_if_exists=True)
     study.optimize(lambda trial: roberta_classifier_objective(trial, train_distribution), n_trials=100, callbacks=[log_tune_result])
     print("Best hyperparameters: ", study.best_params)
 
 if __name__ == '__main__':
     train_distribution, test_distribution = get_distributions(max_tasks=10)
-    tune_roberta_classifier(train_distribution)
+    # tune_roberta_classifier(train_distribution)
     tune_dual(train_distribution)
