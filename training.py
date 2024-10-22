@@ -24,11 +24,16 @@ def model_loop(roberta, model, optimiser, criterion, train_dataloader, val_datal
     return min(val_losses)
 
 # function to perform one epoch of training on an embedding model
-def train_model(roberta, model, optimiser, dataloader, criterion):
+def train_model(roberta, model, optimiser, dataloader, criterion, max_steps=None):
     model.train()
     total_loss = 0.0
 
-    for batch in dataloader:
+    for i, batch in enumerate(dataloader):
+
+        # allow a maximum number of training steps for reptile
+        if max_steps is not None and i >= max_steps:
+            break
+
         optimiser.zero_grad()
 
         anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask = batch
@@ -45,32 +50,36 @@ def train_model(roberta, model, optimiser, dataloader, criterion):
         loss = criterion(anchor_emb, positive_emb, negative_emb)
         loss.backward()
         optimiser.step()
-        total_loss += loss.item()
+        total_loss += loss
     
     avg_loss = total_loss / len(dataloader)
     return avg_loss
 
 # function to perform one epoch of validation on an embedding model
-def validate_model(roberta, model, dataloader, criterion):
+# maml flag indicates whether gradients should be computed
+def validate_model(roberta, model, dataloader, criterion, maml=False):
+
     model.eval()
     total_loss = 0.0
+    context = torch.no_grad() if not maml else torch.enable_grad()
 
     for batch in dataloader:
+       
+        anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask = batch
         
         with torch.no_grad():
-            anchor_input_ids, anchor_attention_mask, positive_input_ids, positive_attention_mask, negative_input_ids, negative_attention_mask = batch
-            
             anchor_emb = roberta(anchor_input_ids, anchor_attention_mask).last_hidden_state
             positive_emb = roberta(positive_input_ids, positive_attention_mask).last_hidden_state
             negative_emb = roberta(negative_input_ids, negative_attention_mask).last_hidden_state
 
+        with context:
             anchor_emb = model(anchor_emb, anchor_attention_mask)
             positive_emb = model(positive_emb, positive_attention_mask)
             negative_emb = model(negative_emb, negative_attention_mask)
-
+            
             loss = criterion(anchor_emb, positive_emb, negative_emb)
-
-        total_loss += loss.item()
+            loss.detach()
+            total_loss += loss
 
     avg_loss = total_loss / len(dataloader)
     return avg_loss
