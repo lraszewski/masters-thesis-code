@@ -135,9 +135,9 @@ class TaskDistribution(Dataset):
     
     def __getitem__(self, index):
         fn = self.tasks[index]
-        print("task:", fn)
         data = pd.read_csv(fn, lineterminator='\n')
         data = data.sample(frac=1, random_state=64).reset_index(drop=True)
+        fn = os.path.basename(fn)
 
         data['input_ids'] = data['input_ids'].apply(ast.literal_eval)
         data['attention_mask'] = data['attention_mask'].apply(ast.literal_eval)
@@ -175,4 +175,4 @@ class TaskDistribution(Dataset):
         query_set_standard = Task(query_data, self.device)
         query_set_triplet = TripletTask(query_data, self.device)
 
-        return support_set_standard, support_set_triplet, query_set_standard, query_set_triplet
+        return fn, support_set_standard, support_set_triplet, query_set_standard, query_set_triplet

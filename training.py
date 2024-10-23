@@ -16,7 +16,7 @@ def model_loop(roberta, model, optimiser, criterion, train_dataloader, val_datal
         val_losses.append(val_loss)
         
         if logging:
-            print(str(epoch) + ": ", train_loss, val_loss)
+            print(str(epoch) + ": ", train_loss.item(), val_loss.item())
 
         if early_stopper.early_stop(val_loss):
             break
@@ -100,7 +100,7 @@ def classifier_loop(roberta, model, classifier, optimiser, criterion, train_data
         val_losses.append(val_loss)
 
         if logging:
-            print(str(epoch) + ": ", train_loss, val_loss)
+            print(str(epoch) + ": ", train_loss.item(), val_loss.item())
 
         if early_stopper.early_stop(val_loss):
             break
@@ -130,7 +130,7 @@ def train_classifier(roberta, model, classifier, optimiser, dataloader, criterio
         loss = criterion(logits.float(), labels.unsqueeze(1).float())
         loss.backward()
         optimiser.step()
-        total_loss += loss.item()
+        total_loss += loss
 
     avg_loss = total_loss / len(dataloader)
     return avg_loss
@@ -153,7 +153,7 @@ def validate_classifier(roberta, model, classifier, dataloader, criterion):
                 model_embeddings = model(roberta_embeddings, attention_mask)
             logits = classifier(model_embeddings)
             loss = criterion(logits.float(), labels.unsqueeze(1).float())
-        total_loss += loss.item()
+        total_loss += loss
 
     avg_loss = total_loss / len(dataloader)
     return avg_loss
@@ -167,6 +167,7 @@ def test(roberta, model, classifier, dataloader):
     
     all_labels = []
     all_probs = []
+    all_embeds = []
     for batch in dataloader:
         with torch.no_grad():
             input_ids, attention_mask, labels = batch
@@ -180,7 +181,9 @@ def test(roberta, model, classifier, dataloader):
             probs = torch.sigmoid(logits).flatten()
             all_labels.append(labels)
             all_probs.append(probs)
+            all_embeds.append(model_embeddings)
     
     all_labels = torch.cat(all_labels)
     all_probs = torch.cat(all_probs)
-    return all_labels, all_probs
+    all_embeds = torch.cat(all_embeds)
+    return all_labels, all_probs, all_embeds

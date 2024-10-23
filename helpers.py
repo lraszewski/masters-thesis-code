@@ -6,6 +6,7 @@ from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 from tqdm import tqdm
 from transformers import AutoModel
+from datetime import datetime
 
 from data import TaskDistribution
 
@@ -14,12 +15,14 @@ INVESTIGATIONS_PATH = 'investigations'
 TASKS_PATH = 'all-distilroberta-v1-tokenized-128'
 DEVICE = 'cuda'
 
+# function to read investigation csv into a pandas dataframe
 def read_investigation(fn):
     data = pd.read_csv(fn, dtype={'page': str, 'message': str}, lineterminator='\n', parse_dates=['timestamp'], date_format="%Y-%m-%dT%H:%M:%S%z")
     data['message'] = data['message'].fillna('')
     data['page'] = data['page'].fillna('')
     return data
 
+# function to generate task specific stats
 def stats(fn, directory):
     data = read_investigation(os.path.join(directory, fn))
 
@@ -48,6 +51,7 @@ def stats(fn, directory):
         'min_page_length': data['page'].apply(len).min(),
     }
 
+# function to generate a file containing task specific stats for a distribution
 def generate_stats(directory):
     data = [stats(fn, directory) for fn in tqdm(os.listdir(directory), desc='generating stats.csv') if fn.endswith('csv')]
     df = pd.DataFrame(data)
@@ -55,6 +59,7 @@ def generate_stats(directory):
         os.makedirs('stats')
     df.to_csv('stats/stats.csv', index=False)
 
+# function to return train and test task distributions
 def get_distributions(max_tasks=None):
     if not os.path.exists(STATS_PATH):
         generate_stats(INVESTIGATIONS_PATH)
@@ -82,12 +87,14 @@ def get_distributions(max_tasks=None):
 
     return train_distribution, test_distribution
 
+# function to initialise and freeze a roberta transformer
 def get_roberta():
     roberta = AutoModel.from_pretrained('sentence-transformers/all-distilroberta-v1', add_pooling_layer=False).to('cuda').eval()
     for param in roberta.parameters():
         param.requires_grad = False
     return roberta
 
+# function to compute the variable batch size
 def get_batch_size(n):
     if n < 16: return 2
     if n < 32: return 4
@@ -95,6 +102,25 @@ def get_batch_size(n):
     if n < 128: return 16
     else: return 32
 
+# function to instantiate a results folder for predictions
+def results_folder(base_dir, name):
+    folder_path = os.path.join(base_dir, name)
+    os.makedirs(folder_path, exist_ok=True)
+    return folder_path
+
+# function to output a set of model results as a csv
+def save_results(dir, fn, labels, probs, embeds):
+    df = pd.DataFrame({
+        'label': labels.cpu().numpy(),
+        'probability': probs.cpu().numpy(),
+        'embeds': embeds.cpu().numpy().tolist()
+    })
+    path = os.path.join(dir, fn)
+    df.to_csv(path, index=False)
+
+def completed(dir, fn):
+    path = os.path.join(dir, fn)
+    return os.path.exists(path)
 
 class EarlyStopper:
 

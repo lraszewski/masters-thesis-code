@@ -48,11 +48,12 @@ class RobertaClassifier(nn.Module):
         self.input_dim = input_dim
         self.dropout = dropout
         self.drp = nn.Dropout(dropout)
-        self.fc1 = nn.Linear(self.input_dim, 260)
-        self.fc2 = nn.Linear(260, 11)
-        self.fc3 = nn.Linear(11, 738)
-        self.fc4 = nn.Linear(738, 611)
-        self.fc5 = nn.Linear(611, 1)
+        self.fc1 = nn.Linear(self.input_dim, 351)
+        self.fc2 = nn.Linear(351, 148)
+        self.fc3 = nn.Linear(148, 423)
+        self.fc4 = nn.Linear(423, 630)
+        self.fc5 = nn.Linear(630, 264)
+        self.fc6 = nn.Linear(264, 1)
 
     def forward(self, x):
         x = F.gelu(self.fc1(x))
@@ -63,7 +64,9 @@ class RobertaClassifier(nn.Module):
         x = self.drp(x)
         x = F.gelu(self.fc4(x))
         x = self.drp(x)
-        x = self.fc5(x)
+        x = F.gelu(self.fc5(x))
+        x = self.drp(x)
+        x = self.fc6(x)
         return x
     
     def clone(self):
