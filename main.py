@@ -26,7 +26,8 @@ from reptile import reptile
 
 DEVICE = 'cuda'
 TRIPLET = True
-SAVE_DIR = './results'
+SAVE_DIR = '/mnt/d/results'
+# SAVE_DIR = './results'
 
 # function to run an experiment. For every task, trains a model, then a
 # classifier, and saves predictions 
@@ -39,7 +40,7 @@ def experiment(name, task_distribution, mdl, mdl_criterion, mdl_epochs, mdl_lr, 
     if not logging:
         iterator = tqdm(task_distribution, desc=name)
 
-    for fn, support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in iterator:
+    for fn, pos_weight, support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in iterator:
         
         # skip tasks for which we already have results
         # assume the parameters of the experiment are unchanged
@@ -70,7 +71,7 @@ def experiment(name, task_distribution, mdl, mdl_criterion, mdl_epochs, mdl_lr, 
         # create a clone of the classifier and train
         clf_clone = clf.clone()
         clf_optimiser = torch.optim.Adam(clf_clone.parameters(), lr=clf_lr)
-        classifier_loop(roberta, mdl_clone, clf_clone, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, clf_epochs, logging)
+        classifier_loop(roberta, mdl_clone, clf_clone, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, pos_weight, clf_epochs, logging)
         
         # get results and save
         labels, probs, embeds = test(roberta, mdl_clone, clf_clone, query_standard_dataloader)
@@ -86,55 +87,53 @@ def experiment(name, task_distribution, mdl, mdl_criterion, mdl_epochs, mdl_lr, 
                 'AUROC': auroc
             })
 
-# tests roberta embeddings + classifier without meta-learning
-def roberta_baseline(test_distribution):
-    name = "roberta_baseline"
-    logging = False
-    
-    # classifier params
-    clf = RobertaClassifier(768, 0.34).to(DEVICE)
-    clf_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(1))
+def roberta_classifier_params():
+    clf = RobertaClassifier(768, 0.35).to(DEVICE)
+    clf_criterion = F.binary_cross_entropy_with_logits
     clf_epochs = 10
     clf_lr = 0.01
+    return clf, clf_criterion, clf_epochs, clf_lr
+
+# a single location to initialise encoder model with chosen params
+def encoder_model_params():
+    mdl = EncoderModel(768, 2, 6).to(DEVICE)
+    mdl_criterion = nn.TripletMarginWithDistanceLoss(distance_function=lambda x, y: 1 - F.cosine_similarity(x, y),margin=0.2)
+    mdl_epochs = 10
+    mdl_lr = 0.0001
+    return mdl, mdl_criterion, mdl_epochs, mdl_lr
+
+# a single location to initialise encoder classifier with chosen params
+def encoder_classifier_params():
+    clf = EncoderClassifier(768, 0.35).to(DEVICE)
+    clf_criterion = F.binary_cross_entropy_with_logits
+    clf_epochs = 10
+    clf_lr = 0.01
+    return clf, clf_criterion, clf_epochs, clf_lr
+
+# tests roberta embeddings + classifier without meta-learning
+def roberta_baseline(test_distribution, logging):
+    name = "roberta_baseline"
+
+    clf, clf_criterion, clf_epochs, clf_lr = roberta_classifier_params()
     
     experiment(name, test_distribution, None, None, None, None, clf, clf_criterion, clf_epochs, clf_lr, logging)
 
 # tests roberta embeddings + encoder + classifier without meta-learning
-def dual_baseline(test_distribution):
+def dual_baseline(test_distribution, logging):
     name = "dual_baseline"
-    logging = False
 
-    # model params
-    mdl = EncoderModel(768, 2, 6).to(DEVICE)
-    mdl_criterion = nn.TripletMarginWithDistanceLoss(distance_function=lambda x, y: 1 - F.cosine_similarity(x, y),margin=0.2)
-    mdl_epochs = 10
-    mdl_lr = 0.0001
-
-    # classifier params
-    clf = EncoderClassifier(768, 0.34).to(DEVICE)
-    clf_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(1))
-    clf_epochs = 10
-    clf_lr = 0.01
+    mdl, mdl_criterion, mdl_epochs, mdl_lr = encoder_model_params()
+    clf, clf_criterion, clf_epochs, clf_lr = encoder_classifier_params()
     
     experiment(name, test_distribution, mdl, mdl_criterion, mdl_epochs, mdl_lr, clf, clf_criterion, clf_epochs, clf_lr, logging)
 
 # tests roberta embeddings + encoder + classifier with reptile meta-learning
-def dual_reptile(train_distribution, test_distribution):
+def dual_reptile(train_distribution, test_distribution, logging):
     name = "dual_reptile"
-    logging = False
     save_path = results_folder(SAVE_DIR, name)
 
-    # model params
-    mdl = EncoderModel(768, 2, 6).to(DEVICE)
-    mdl_criterion = nn.TripletMarginWithDistanceLoss(distance_function=lambda x, y: 1 - F.cosine_similarity(x, y),margin=0.2)
-    mdl_epochs = 10
-    mdl_lr = 0.0001
-
-    # classifier params
-    clf = EncoderClassifier(768, 0.34).to(DEVICE)
-    clf_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(1))
-    clf_epochs = 10
-    clf_lr = 0.01
+    mdl, mdl_criterion, mdl_epochs, mdl_lr = encoder_model_params()
+    clf, clf_criterion, clf_epochs, clf_lr = encoder_classifier_params()
 
     # reptile params
     rep_epochs = 5
@@ -172,7 +171,6 @@ def reptile_poc(train_distribution, test_distribution):
     experiment(name, test_distribution, metamodel, criterion, 1, 0.0001, classifier, clf_criterion, 3, 0.01, False)
 
 if __name__ == '__main__':
-    train_distribution, test_distribution = get_distributions(max_tasks=10)
-    # reptile_poc(train_distribution, test_distribution)
-    # roberta_baseline(test_distribution)
-    dual_reptile(train_distribution, test_distribution)
+    train_distribution, test_distribution = get_distributions()
+    logging = False
+    roberta_baseline(test_distribution, logging)
