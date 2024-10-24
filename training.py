@@ -86,18 +86,18 @@ def validate_model(roberta, model, dataloader, criterion, maml=False):
 
 
 # function to train and validate a classifier model using BCE loss
-def classifier_loop(roberta, model, classifier, optimiser, criterion, train_dataloader, val_dataloader, epochs, logging):
+def classifier_loop(roberta, model, classifier, optimiser, criterion, train_dataloader, val_dataloader, pos_weight, epochs, logging):
 
     train_losses = []
     val_losses = []
     early_stopper = EarlyStopper()
     for epoch in range(epochs):
 
-        train_loss = train_classifier(roberta, model, classifier, optimiser, train_dataloader, criterion)            
-        val_loss = validate_classifier(roberta, model, classifier, val_dataloader, criterion)
+        train_loss = train_classifier(roberta, model, classifier, optimiser, train_dataloader, criterion, pos_weight)            
+        val_loss = validate_classifier(roberta, model, classifier, val_dataloader, criterion, pos_weight)
 
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
+        train_losses.append(train_loss.item())
+        val_losses.append(val_loss.item())
 
         if logging:
             print(str(epoch) + ": ", train_loss.item(), val_loss.item())
@@ -108,7 +108,7 @@ def classifier_loop(roberta, model, classifier, optimiser, criterion, train_data
     return min(val_losses)
 
 # function to perform one epoch of training on a classifier model
-def train_classifier(roberta, model, classifier, optimiser, dataloader, criterion):
+def train_classifier(roberta, model, classifier, optimiser, dataloader, criterion, pos_weight):
     if model:
         model.eval()
     classifier.train()
@@ -127,7 +127,7 @@ def train_classifier(roberta, model, classifier, optimiser, dataloader, criterio
                 model_embeddings = model(roberta_embeddings, attention_mask)
         logits = classifier(model_embeddings)
         
-        loss = criterion(logits.float(), labels.unsqueeze(1).float())
+        loss = criterion(logits.float(), labels.unsqueeze(1).float(), pos_weight=pos_weight)
         loss.backward()
         optimiser.step()
         total_loss += loss
@@ -136,7 +136,7 @@ def train_classifier(roberta, model, classifier, optimiser, dataloader, criterio
     return avg_loss
 
 # function to perform one epoch of validation on a classifier model     
-def validate_classifier(roberta, model, classifier, dataloader, criterion):
+def validate_classifier(roberta, model, classifier, dataloader, criterion, pos_weight):
     if model:
         model.eval()
     classifier.eval()
@@ -152,7 +152,7 @@ def validate_classifier(roberta, model, classifier, dataloader, criterion):
             else:
                 model_embeddings = model(roberta_embeddings, attention_mask)
             logits = classifier(model_embeddings)
-            loss = criterion(logits.float(), labels.unsqueeze(1).float())
+            loss = criterion(logits.float(), labels.unsqueeze(1).float(), pos_weight=pos_weight)
         total_loss += loss
 
     avg_loss = total_loss / len(dataloader)
