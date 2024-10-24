@@ -54,13 +54,22 @@ def log_tune_result(study, trial):
     fn = "results/" + study.study_name + ".csv"
     results_df.to_csv(fn, mode='a', header=not pd.io.common.file_exists(fn), index=False)
 
+def review_study(name, storage):
+    study = optuna.load_study(name, storage=storage)
+    print("Best trial value (objective): ", study.best_trial.value)
+    print("Best hyperparameters: ", study.best_trial.params)
+    optuna.visualization.plot_optimization_history(study).show()
+    optuna.visualization.plot_param_importances(study).show()
+    optuna.visualization.plot_slice(study).show()
+    optuna.visualization.plot_parallel_coordinate(study).show()
+
 # objective function to tune the embedding and classifier models
 def dual_objective(trial, train_distribution):
 
     # classifier tuned parameters
     clf_lr, clf_dropout, clf_n_layers, clf_pos_weight = suggest_classifier_parameters(trial)
     clf_layers = design_classifier(trial, clf_n_layers, clf_dropout)
-    clf_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(clf_pos_weight))
+    clf_criterion = F.binary_cross_entropy_with_logits()
 
     # model tuned parameters
     mdl_lr, mdl_n_heads, mdl_n_layers, mdl_margin = suggest_model_parameters(trial)
@@ -73,7 +82,7 @@ def dual_objective(trial, train_distribution):
     mdl_epochs = EPOCHS
 
     aurocs = []
-    for support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in train_distribution:
+    for _, pos_weight, support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in train_distribution:
 
         # create necessary dataloaders
         support_standard_batch_size = get_batch_size(len(support_set_standard))
@@ -93,7 +102,7 @@ def dual_objective(trial, train_distribution):
 
         # train
         mdl_loss = model_loop(roberta, mdl_clone, mdl_optimiser, mdl_criterion, support_triplet_dataloader, query_triplet_dataloader, mdl_epochs, logging=False)
-        clf_loss = classifier_loop(roberta, mdl_clone, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, clf_epochs, logging=False)
+        clf_loss = classifier_loop(roberta, mdl_clone, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, pos_weight, clf_epochs, logging=False)
 
         # test
         labels, probs = test(roberta, mdl_clone, clf, query_standard_dataloader)
@@ -109,7 +118,7 @@ def roberta_classifier_objective(trial, train_distribution):
     # tuned parameters
     clf_lr, clf_dropout, clf_n_layers, clf_pos_weight = suggest_classifier_parameters(trial)
     clf_layers = design_classifier(trial, clf_n_layers, clf_dropout)
-    clf_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(clf_pos_weight))
+    clf_criterion = F.binary_cross_entropy_with_logits()
 
     # constants
     roberta = get_roberta()
@@ -117,7 +126,7 @@ def roberta_classifier_objective(trial, train_distribution):
 
     losses = []
     aurocs = []
-    for support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in train_distribution:
+    for _, pos_weight, support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in train_distribution:
 
         # create necessary dataloaders
         support_batch_size = get_batch_size(len(support_set_standard))
@@ -130,7 +139,7 @@ def roberta_classifier_objective(trial, train_distribution):
         clf_optimiser = torch.optim.Adam(clf.parameters(), lr=clf_lr)
 
         # train
-        loss = classifier_loop(roberta, None, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, clf_epochs, False)
+        loss = classifier_loop(roberta, None, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, pos_weight, clf_epochs, False)
         losses.append(loss)
 
         # test
@@ -156,4 +165,5 @@ def tune_roberta_classifier(train_distribution):
 if __name__ == '__main__':
     train_distribution, test_distribution = get_distributions(max_tasks=10)
     # tune_roberta_classifier(train_distribution)
-    tune_dual(train_distribution)
+    # tune_dual(train_distribution)
+    review_study('roberta_classifier_hyperparameters_adam', 'sqlite:///hyper-parameters/roberta_classifier_adam_study.db')
