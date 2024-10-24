@@ -141,13 +141,14 @@ class TaskDistribution(Dataset):
 
         data['input_ids'] = data['input_ids'].apply(ast.literal_eval)
         data['attention_mask'] = data['attention_mask'].apply(ast.literal_eval)
+
+        puppetmaster_samples = data[data['label'] == 0]
+        sockpuppet_samples = data[data['label'] == 1]
+        negatives = data[data['label'] == 2]
         
         # process into support set and query set
         if (self.puppetmaster):
-            puppetmaster_samples = data[data['label'] == 0]
-            sockpuppet_samples = data[data['label'] == 1]
-            negatives = data[data['label'] == 2]
-
+            
             if (len(puppetmaster_samples) < self.min_puppetmaster):
                 raise ValueError(f'{fn}: insufficient puppetmaster samples')
             if (len(sockpuppet_samples) < self.min_sockpuppet):
@@ -166,13 +167,21 @@ class TaskDistribution(Dataset):
             support_data = data.iloc[:split].reset_index(drop=True)
             query_data = data.iloc[split:].reset_index(drop=True)
 
-        # recast labels
+        # recast labels dealing with old schema
+        # 0 is puppetmaster (positive)
+        # 1 is sockpuppet (positive)
+        # 2 is negative (negative)
         support_data['label'] = support_data['label'].map({0: 1, 1: 1, 2: 0})
         query_data['label'] = query_data['label'].map({0: 1, 1: 1, 2: 0})
+
+        # compute pos weight based on train data
+        n_pos = len(support_data[support_data['label'] == 1])
+        n_neg = len(support_data[support_data['label'] == 0])
+        pos_weight = torch.tensor(n_neg/n_pos, device=self.device)
 
         support_set_standard = Task(support_data, self.device)
         support_set_triplet = TripletTask(support_data, self.device)
         query_set_standard = Task(query_data, self.device)
         query_set_triplet = TripletTask(query_data, self.device)
 
-        return fn, support_set_standard, support_set_triplet, query_set_standard, query_set_triplet
+        return fn, pos_weight, support_set_standard, support_set_triplet, query_set_standard, query_set_triplet
