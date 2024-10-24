@@ -96,10 +96,11 @@ def get_roberta():
 
 # function to compute the variable batch size
 def get_batch_size(n):
-    if n < 16: return 2
-    if n < 32: return 4
-    if n < 64: return 8
-    if n < 128: return 16
+    if n < 16: return 1
+    if n < 32: return 2
+    if n < 64: return 4
+    if n < 128: return 8
+    if n < 256: return 16
     else: return 32
 
 # function to instantiate a results folder for predictions
@@ -124,7 +125,7 @@ def completed(dir, fn):
 
 class EarlyStopper:
 
-    def __init__(self, patience=3, min_delta=0):
+    def __init__(self, patience=2, min_delta=0):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
