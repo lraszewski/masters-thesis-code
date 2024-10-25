@@ -18,7 +18,7 @@ from tqdm import tqdm
 from torchmetrics.functional.classification import binary_auroc
 
 from models import EncoderModel, EncoderClassifier, RobertaClassifier
-from helpers import EarlyStopper, get_distributions, get_roberta, results_folder, save_results, completed, get_batch_size
+from helpers import EarlyStopper, get_distributions, get_roberta, results_folder, save_results, completed, get_batch_size, get_dataloader
 from loss import ContrastiveLoss
 from training import model_loop, classifier_loop, test
 from maml import maml
@@ -40,41 +40,48 @@ def experiment(name, task_distribution, mdl, mdl_criterion, mdl_epochs, mdl_lr, 
     if not logging:
         iterator = tqdm(task_distribution, desc=name)
 
-    for fn, pos_weight, support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in iterator:
-        
+    for task in iterator:
+
         # skip tasks for which we already have results
         # assume the parameters of the experiment are unchanged
+        fn = task['fn']
         if completed(results, fn):
             continue
-        
+
+        torch.cuda.empty_cache()
+
+        pos_weight = task['pos_weight']
+        train_set_standard = task['train_set_standard']
+        train_set_triplet = task['train_set_triplet']
+        val_set_standard = task['val_set_standard']
+        val_set_triplet = task['val_set_triplet']
+        test_set_standard = task['test_set_standard']
+
         # create necessary dataloaders
-        support_standard_batch_size = get_batch_size(len(support_set_standard))
-        query_standard_batch_size = get_batch_size(len(query_set_standard))
-        support_standard_dataloader = DataLoader(support_set_standard, batch_size=support_standard_batch_size, shuffle=True, drop_last=True)
-        query_standard_dataloader = DataLoader(query_set_standard, batch_size=query_standard_batch_size, shuffle=False, drop_last=False)
+        train_standard_dataloader = get_dataloader(train_set_standard, shuffle=True, drop_last=True)
+        val_standard_dataloader = get_dataloader(val_set_standard)
+        test_standard_dataloader = get_dataloader(test_set_standard)
         
         mdl_clone = None
 
         if mdl:
 
             # model specific dataloaders
-            support_triplet_batch_size = get_batch_size(len(support_set_triplet))
-            query_triplet_batch_size = get_batch_size(len(query_set_triplet))
-            support_triplet_dataloader = DataLoader(support_set_triplet, batch_size=support_triplet_batch_size, shuffle=True, drop_last=True)
-            query_triplet_dataloader = DataLoader(query_set_triplet, batch_size=query_triplet_batch_size, shuffle=False, drop_last=False)
+            train_triplet_dataloader = get_dataloader(train_set_triplet, shuffle=True, drop_last=True)
+            val_triplet_dataloader = get_dataloader(val_set_triplet)
 
             # create a clone of the model and train
             mdl_clone = mdl.clone()
             mdl_optimiser = torch.optim.Adam(mdl_clone.parameters(), lr=mdl_lr)
-            model_loop(roberta, mdl_clone, mdl_optimiser, mdl_criterion, support_triplet_dataloader, query_triplet_dataloader, mdl_epochs, logging)
+            model_loop(roberta, mdl_clone, mdl_optimiser, mdl_criterion, train_triplet_dataloader, val_triplet_dataloader, mdl_epochs, logging)
 
         # create a clone of the classifier and train
         clf_clone = clf.clone()
         clf_optimiser = torch.optim.Adam(clf_clone.parameters(), lr=clf_lr)
-        classifier_loop(roberta, mdl_clone, clf_clone, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, pos_weight, clf_epochs, logging)
+        classifier_loop(roberta, mdl_clone, clf_clone, clf_optimiser, clf_criterion, train_standard_dataloader, val_standard_dataloader, pos_weight, clf_epochs, logging)
         
         # get results and save
-        labels, probs, embeds = test(roberta, mdl_clone, clf_clone, query_standard_dataloader)
+        labels, probs, embeds = test(roberta, mdl_clone, clf_clone, test_standard_dataloader)
         save_results(results, fn, labels, probs, embeds)
 
         # track auroc
@@ -91,7 +98,7 @@ def roberta_classifier_params():
     clf = RobertaClassifier(768, 0.35).to(DEVICE)
     clf_criterion = F.binary_cross_entropy_with_logits
     clf_epochs = 10
-    clf_lr = 0.01
+    clf_lr = 0.001
     return clf, clf_criterion, clf_epochs, clf_lr
 
 # a single location to initialise encoder model with chosen params
