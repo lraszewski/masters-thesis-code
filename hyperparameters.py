@@ -8,7 +8,7 @@ import copy
 
 from training import model_loop, classifier_loop, test
 from models import EncoderModel
-from helpers import get_distributions, get_roberta, get_batch_size
+from helpers import get_distributions, get_roberta, get_dataloader
 from torch.utils.data import DataLoader
 
 DEVICE = 'cuda'
@@ -27,8 +27,7 @@ def suggest_classifier_parameters(trial):
     clf_lr = trial.suggest_float('clf_lr', 1e-5, 1e-1)
     clf_dropout = trial.suggest_float('clf_dropout', 0.0, 1.0)
     clf_n_layers = trial.suggest_int('clf_n_layers', 1, 6)
-    clf_pos_weight = trial.suggest_float('clf_pos_weight', 0.5, 5.0)
-    return clf_lr, clf_dropout, clf_n_layers, clf_pos_weight
+    return clf_lr, clf_dropout, clf_n_layers
 
 # given a trial, n_layers and dropout, return a set of classifier layers
 def design_classifier(trial, clf_n_layers, clf_dropout):
@@ -67,7 +66,7 @@ def review_study(name, storage):
 def dual_objective(trial, train_distribution):
 
     # classifier tuned parameters
-    clf_lr, clf_dropout, clf_n_layers, clf_pos_weight = suggest_classifier_parameters(trial)
+    clf_lr, clf_dropout, clf_n_layers = suggest_classifier_parameters(trial)
     clf_layers = design_classifier(trial, clf_n_layers, clf_dropout)
     clf_criterion = F.binary_cross_entropy_with_logits()
 
@@ -82,17 +81,22 @@ def dual_objective(trial, train_distribution):
     mdl_epochs = EPOCHS
 
     aurocs = []
-    for _, pos_weight, support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in train_distribution:
+    for task in train_distribution:
+
+        # unpack task
+        pos_weight = task['pos_weight']
+        train_set_standard = task['train_set_standard']
+        train_set_triplet = task['train_set_triplet']
+        val_set_standard = task['val_set_standard']
+        val_set_triplet = task['val_set_triplet']
+        test_set_standard = task['test_set_standard']
 
         # create necessary dataloaders
-        support_standard_batch_size = get_batch_size(len(support_set_standard))
-        support_triplet_batch_size = get_batch_size(len(support_set_triplet))
-        query_standard_batch_size = get_batch_size(len(query_set_standard))
-        query_triplet_batch_size = get_batch_size(len(query_set_triplet))
-        support_standard_dataloader = DataLoader(support_set_standard, batch_size=support_standard_batch_size, shuffle=True, drop_last=True)
-        support_triplet_dataloader = DataLoader(support_set_triplet, batch_size=support_triplet_batch_size, shuffle=True, drop_last=True)
-        query_standard_dataloader = DataLoader(query_set_standard, batch_size=query_standard_batch_size, shuffle=False, drop_last=False)
-        query_triplet_dataloader = DataLoader(query_set_triplet, batch_size=query_triplet_batch_size, shuffle=False, drop_last=False)
+        train_standard_dataloader = get_dataloader(train_set_standard, shuffle=True, drop_last=True)
+        val_standard_dataloader = get_dataloader(val_set_standard)
+        test_standard_dataloader = get_dataloader(test_set_standard)
+        train_triplet_dataloader = get_dataloader(train_set_triplet, shuffle=True, drop_last=True)
+        val_triplet_dataloader = get_dataloader(val_set_triplet)
 
         # create model, classifier and optimisers
         mdl_clone = mdl.clone()
@@ -101,11 +105,11 @@ def dual_objective(trial, train_distribution):
         clf_optimiser = torch.optim.Adam(clf.parameters(), lr=clf_lr)
 
         # train
-        mdl_loss = model_loop(roberta, mdl_clone, mdl_optimiser, mdl_criterion, support_triplet_dataloader, query_triplet_dataloader, mdl_epochs, logging=False)
-        clf_loss = classifier_loop(roberta, mdl_clone, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, pos_weight, clf_epochs, logging=False)
+        model_loop(roberta, mdl_clone, mdl_optimiser, mdl_criterion, train_triplet_dataloader, val_triplet_dataloader, mdl_epochs, logging=False)
+        classifier_loop(roberta, mdl_clone, clf, clf_optimiser, clf_criterion, train_standard_dataloader, val_standard_dataloader, pos_weight, clf_epochs, logging=False)
 
         # test
-        labels, probs = test(roberta, mdl_clone, clf, query_standard_dataloader)
+        labels, probs = test(roberta, mdl_clone, clf, test_standard_dataloader)
         auroc = binary_auroc(probs, labels, thresholds=None)
         aurocs.append(auroc.item())
         print(auroc.item())
@@ -116,7 +120,7 @@ def dual_objective(trial, train_distribution):
 def roberta_classifier_objective(trial, train_distribution):
 
     # tuned parameters
-    clf_lr, clf_dropout, clf_n_layers, clf_pos_weight = suggest_classifier_parameters(trial)
+    clf_lr, clf_dropout, clf_n_layers = suggest_classifier_parameters(trial)
     clf_layers = design_classifier(trial, clf_n_layers, clf_dropout)
     clf_criterion = F.binary_cross_entropy_with_logits()
 
@@ -126,24 +130,29 @@ def roberta_classifier_objective(trial, train_distribution):
 
     losses = []
     aurocs = []
-    for _, pos_weight, support_set_standard, support_set_triplet, query_set_standard, query_set_triplet in train_distribution:
+    for task in train_distribution:
+
+        # unpack task
+        pos_weight = task['pos_weight']
+        train_set_standard = task['train_set_standard']
+        val_set_standard = task['val_set_standard']
+        test_set_standard = task['test_set_standard']
 
         # create necessary dataloaders
-        support_batch_size = get_batch_size(len(support_set_standard))
-        query_batch_size = get_batch_size(len(query_set_standard))
-        support_standard_dataloader = DataLoader(support_set_standard, batch_size=support_batch_size, shuffle=True, drop_last=True)
-        query_standard_dataloader = DataLoader(query_set_standard, batch_size=query_batch_size, shuffle=False, drop_last=False)
+        train_standard_dataloader = get_dataloader(train_set_standard, shuffle=True, drop_last=True)
+        val_standard_dataloader = get_dataloader(val_set_standard)
+        test_standard_dataloader = get_dataloader(test_set_standard)
 
         # create a classifier and optimiser
         clf = torch.nn.Sequential(*copy.deepcopy(clf_layers)).to(torch.device(DEVICE))
         clf_optimiser = torch.optim.Adam(clf.parameters(), lr=clf_lr)
 
         # train
-        loss = classifier_loop(roberta, None, clf, clf_optimiser, clf_criterion, support_standard_dataloader, query_standard_dataloader, pos_weight, clf_epochs, False)
+        loss = classifier_loop(roberta, None, clf, clf_optimiser, clf_criterion, train_standard_dataloader, val_standard_dataloader, pos_weight, clf_epochs, False)
         losses.append(loss)
 
         # test
-        labels, probs = test(roberta, None, clf, query_standard_dataloader)
+        labels, probs = test(roberta, None, clf, test_standard_dataloader)
         auroc = binary_auroc(probs, labels, thresholds=None)
         aurocs.append(auroc.item())
         print(auroc.item())
