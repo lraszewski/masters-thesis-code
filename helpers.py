@@ -7,6 +7,7 @@ from sklearn.decomposition import PCA
 from tqdm import tqdm
 from transformers import AutoModel
 from datetime import datetime
+from torch.utils.data import DataLoader
 
 from data import TaskDistribution
 
@@ -69,12 +70,11 @@ def get_distributions(max_tasks=None):
         directory=TASKS_PATH,
         stats=stats,
         device=DEVICE,
-        puppetmaster=True,
         max_tasks=max_tasks,
         min_puppetmaster=10,
         min_sockpuppet=5,
         min_ratio=1,
-        split_ratio=0.8
+        val_split=0.8
     )
 
     gen = torch.Generator().manual_seed(64)
@@ -103,6 +103,10 @@ def get_batch_size(n):
     if n < 256: return 16
     else: return 32
 
+def get_dataloader(dataset, shuffle=False, drop_last=False):
+    batch_size = get_batch_size(len(dataset))
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
+
 # function to instantiate a results folder for predictions
 def results_folder(base_dir, name):
     folder_path = os.path.join(base_dir, name)
@@ -125,7 +129,7 @@ def completed(dir, fn):
 
 class EarlyStopper:
 
-    def __init__(self, patience=2, min_delta=0):
+    def __init__(self, patience=3, min_delta=0):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0

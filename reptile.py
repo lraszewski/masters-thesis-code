@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import DataLoader, ConcatDataset
 from tqdm import tqdm
 
-from helpers import get_batch_size, get_roberta
+from helpers import get_roberta, get_dataloader
 from training import train_model
 
 DEVICE = 'cuda'
@@ -67,14 +67,13 @@ def outer_loop(task_distribution, roberta, model, criterion, interp, inner_lr, i
 def inner_loop(roberta, task, model, criterion, lr, steps):
     
     # unpack task
-    fn, _, support_set, _, query_set = task
+    fn = task['fn']
+    support_set = task['support_set_triplet']
+    query_set = task['test_set_triplet']
 
     # reptile makes no distinction between support and query set
     dataset = ConcatDataset([support_set, query_set])
-
-    # create necessary dataloaders
-    batch_size = get_batch_size(len(dataset))
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+    dataloader = get_dataloader(dataset, shuffle=True, drop_last=True)
 
     # train the clone x update steps
     optimiser = torch.optim.Adam(model.parameters(), lr=lr)
