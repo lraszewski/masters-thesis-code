@@ -7,19 +7,35 @@ def model_loop(roberta, model, optimiser, criterion, train_dataloader, val_datal
     train_losses = []
     val_losses = []
     early_stopper = EarlyStopper()
+
+    # track best model
+    best_val_loss = float('inf')
+    best_state = None
+
     for epoch in range(epochs):
 
         train_loss = train_model(roberta, model, optimiser, train_dataloader, criterion)
         val_loss = validate_model(roberta, model, val_dataloader, criterion)
 
+        train_loss = train_loss.item()
+        val_loss = val_loss.item()
+
         train_losses.append(train_loss)
         val_losses.append(val_loss)
         
         if logging:
-            print(str(epoch) + ": ", train_loss.item(), val_loss.item())
+            print(str(epoch) + ": ", train_loss, val_loss)
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state = model.state_dict()
 
         if early_stopper.early_stop(val_loss):
             break
+
+    # return model to best state
+    if best_state is not None:
+        model.load_state_dict(best_state)
     
     return min(val_losses)
 
@@ -91,20 +107,36 @@ def classifier_loop(roberta, model, classifier, optimiser, criterion, train_data
     train_losses = []
     val_losses = []
     early_stopper = EarlyStopper()
-    for epoch in range(epochs):
 
-        train_loss = train_classifier(roberta, model, classifier, optimiser, train_dataloader, criterion, pos_weight)            
+    # track best classifier
+    best_val_loss = float('inf')
+    best_state = None
+
+    for epoch in range(epochs):
+        
+        train_loss = train_classifier(roberta, model, classifier, optimiser, train_dataloader, criterion, pos_weight)
         val_loss = validate_classifier(roberta, model, classifier, val_dataloader, criterion, pos_weight)
 
-        train_losses.append(train_loss.item())
-        val_losses.append(val_loss.item())
+        train_loss = train_loss.item()
+        val_loss = val_loss.item()
+
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
 
         if logging:
-            print(str(epoch) + ": ", train_loss.item(), val_loss.item())
+            print(str(epoch) + ": ", train_loss, val_loss)
+        
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state = classifier.state_dict()
 
         if early_stopper.early_stop(val_loss):
             break
     
+    # return classifier to best state
+    if best_state is not None:
+        classifier.load_state_dict(best_state)
+
     return min(val_losses)
 
 # function to perform one epoch of training on a classifier model
@@ -179,9 +211,9 @@ def test(roberta, model, classifier, dataloader):
                 model_embeddings = model(roberta_embeddings, attention_mask)
             logits = classifier(model_embeddings)
             probs = torch.sigmoid(logits).flatten()
-            all_labels.append(labels)
-            all_probs.append(probs)
-            all_embeds.append(model_embeddings)
+            all_labels.append(labels.cpu())
+            all_probs.append(probs.cpu())
+            all_embeds.append(model_embeddings.cpu())
     
     all_labels = torch.cat(all_labels)
     all_probs = torch.cat(all_probs)
