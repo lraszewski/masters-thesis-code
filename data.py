@@ -38,11 +38,14 @@ class TripletTask(Dataset):
     
     def __getitem__(self, index):
         anchor = self.positive_samples.iloc[index]
-
-        # randomly select a positive that is not the anchor
-        positive = self.positive_samples.sample(n=1).iloc[0]
-        while np.array_equal(positive['input_ids'], anchor['input_ids']):
-            positive = self.positive_samples.sample(n=1).iloc[0]
+        positive_indexes = [i for i in range(len(self.positive_samples)) if i != index]
+        positive = self.positive_samples.iloc[np.random.choice(positive_indexes)]
+        
+        # try a few times to ensure they aren't identical
+        attempts = 0
+        while (np.array_equal(positive['input_ids'], anchor['input_ids'])) and attempts < 16:
+            positive = self.positive_samples.iloc[np.random.choice(positive_indexes)]
+            attempts += 1
 
         # randomly select a negative
         negative = self.negative_samples.sample(n=1).iloc[0]
