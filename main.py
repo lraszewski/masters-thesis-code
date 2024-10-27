@@ -114,7 +114,7 @@ def encoder_classifier_params():
     clf = EncoderClassifier(768, 0.35).to(DEVICE)
     clf_criterion = F.binary_cross_entropy_with_logits
     clf_epochs = 10
-    clf_lr = 0.01
+    clf_lr = 0.001
     return clf, clf_criterion, clf_epochs, clf_lr
 
 # tests roberta embeddings + classifier without meta-learning
@@ -143,7 +143,7 @@ def dual_reptile(train_distribution, test_distribution, logging):
     clf, clf_criterion, clf_epochs, clf_lr = encoder_classifier_params()
 
     # reptile params
-    rep_epochs = 5
+    rep_epochs = 10
     rep_interp = 0.2
     rep_inner_steps = 5
 
@@ -180,4 +180,4 @@ def reptile_poc(train_distribution, test_distribution):
 if __name__ == '__main__':
     train_distribution, test_distribution = get_distributions()
     logging = False
-    roberta_baseline(test_distribution, logging)
+    dual_reptile(train_distribution, test_distribution, logging)
