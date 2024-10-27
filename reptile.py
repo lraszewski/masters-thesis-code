@@ -21,7 +21,7 @@ def reptile(save_path, task_distribution, model, criterion, epochs, interp, inne
         epoch_losses.append(epoch_loss)
 
         # save a checkpoint of the model
-        path = save_path + '/model.pt'
+        path = f'{save_path}/model_{epoch}.pt'
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
