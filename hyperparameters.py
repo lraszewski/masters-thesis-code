@@ -175,4 +175,4 @@ if __name__ == '__main__':
     train_distribution, test_distribution = get_distributions(max_tasks=10)
     # tune_roberta_classifier(train_distribution)
     # tune_dual(train_distribution)
-    review_study('roberta_classifier_hyperparameters_adam', 'sqlite:///hyper-parameters/roberta_classifier_adam_study.db')
+    review_study('dual_hyperparameters', 'sqlite:///hyper-parameters/dual_hyperparameters_adam_study.db')
