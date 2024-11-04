@@ -2,6 +2,7 @@ import pandas as pd
 import os
 import torch
 import matplotlib.pyplot as plt
+import re
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 from tqdm import tqdm
@@ -126,6 +127,12 @@ def save_results(dir, fn, labels, probs, embeds):
 def completed(dir, fn):
     path = os.path.join(dir, fn)
     return os.path.exists(path)
+
+def get_latest_model(path):
+    files = os.listdir(path)
+    model_files = [f for f in files if re.match(r'model_\d+\.pt', f)]
+    sorted_files = sorted(model_files, key=lambda x: int(re.search(r'\d+', x).group()), reverse=True)
+    return os.path.join(path, sorted_files[0]) if sorted_files else None
 
 class EarlyStopper:
 
