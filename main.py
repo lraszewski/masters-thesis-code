@@ -27,7 +27,6 @@ from reptile import reptile
 DEVICE = 'cuda'
 TRIPLET = True
 SAVE_DIR = '/mnt/d/results'
-# SAVE_DIR = './results'
 
 # function to run an experiment. For every task, trains a model, then a
 # classifier, and saves predictions 
@@ -143,11 +142,12 @@ def dual_reptile(train_distribution, test_distribution, logging):
     clf, clf_criterion, clf_epochs, clf_lr = encoder_classifier_params()
 
     # reptile params
-    rep_epochs = 10
-    rep_interp = 0.2
+    rep_epochs = 5
+    rep_outer_lr = 0.3
     rep_inner_steps = 5
+    serial = True
 
-    reptile(save_path, train_distribution, mdl, mdl_criterion, rep_epochs, rep_interp, mdl_lr, rep_inner_steps)
+    reptile(save_path, train_distribution, mdl, mdl_criterion, rep_epochs, rep_outer_lr, mdl_lr, rep_inner_steps, serial)
     experiment(name, test_distribution, mdl, mdl_criterion, mdl_epochs, mdl_lr, clf, clf_criterion, clf_epochs, clf_lr, logging)
 
 
@@ -180,4 +180,6 @@ def reptile_poc(train_distribution, test_distribution):
 if __name__ == '__main__':
     train_distribution, test_distribution = get_distributions()
     logging = False
+    # roberta_baseline(test_distribution, logging)
+    # dual_baseline(test_distribution, logging)
     dual_reptile(train_distribution, test_distribution, logging)
