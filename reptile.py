@@ -57,10 +57,12 @@ def outer_loop_serial(task_distribution, roberta, model, criterion, interp, inne
     tasks_dataloader = DataLoader(task_distribution, batch_size=1, shuffle=True, collate_fn=lambda x: x)
     
     # linear lr annealing
-    meta_iters = len(task_distribution) * epochs
-    curr_iter = len(task_distribution) * epoch
-    frac_done = curr_iter / meta_iters
-    curr_interp = frac_done * 0.0 + (1 - frac_done) * interp
+    linear_annealing = False
+    if linear_annealing:
+        meta_iters = len(task_distribution) * epochs
+        curr_iter = len(task_distribution) * epoch
+        frac_done = curr_iter / meta_iters
+        curr_interp = frac_done * 0.0 + (1 - frac_done) * interp
 
     epoch_loss = 0.0
     iterator = tqdm(tasks_dataloader, leave=False)
@@ -68,9 +70,12 @@ def outer_loop_serial(task_distribution, roberta, model, criterion, interp, inne
         for task in batch:
             
             # linear annealing
-            frac_done = curr_iter / meta_iters
-            curr_interp = frac_done * 0.0 + (1 - frac_done) * interp
-            curr_iter += 1
+            if linear_annealing:
+                frac_done = curr_iter / meta_iters
+                curr_interp = frac_done * 0.0 + (1 - frac_done) * interp
+                curr_iter += 1
+            else:
+                curr_interp = interp
 
             # train a clone
             clone = model.clone()
