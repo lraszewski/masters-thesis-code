@@ -23,6 +23,7 @@ from loss import ContrastiveLoss
 from training import model_loop, classifier_loop, test
 from maml import maml
 from reptile import reptile
+from pretrained import pretrained
 
 DEVICE = 'cuda'
 TRIPLET = True
@@ -143,13 +144,22 @@ def dual_reptile(train_distribution, test_distribution, logging):
 
     # reptile params
     rep_epochs = 5
-    rep_outer_lr = 0.3
+    rep_outer_lr = 0.2
     rep_inner_steps = 5
     serial = True
 
     reptile(save_path, train_distribution, mdl, mdl_criterion, rep_epochs, rep_outer_lr, mdl_lr, rep_inner_steps, serial)
     experiment(name, test_distribution, mdl, mdl_criterion, mdl_epochs, mdl_lr, clf, clf_criterion, clf_epochs, clf_lr, logging)
 
+def roberta_pretrained(train_distribution, test_distribution, logging):
+    name = "roberta_pretrained"
+    save_path = results_folder(SAVE_DIR, name)
+
+    pretrained_epochs = 2
+    clf, clf_criterion, clf_epochs, clf_lr = roberta_classifier_params()
+
+    pretrained(save_path, train_distribution, clf, clf_criterion, clf_lr, pretrained_epochs)
+    experiment(name, test_distribution, None, None, None, None, clf, clf_criterion, clf_epochs, clf_lr, logging)
 
 def maml_exp(task_distribution):
     model = EncoderModel(768, 2, 6).to(DEVICE)
@@ -182,4 +192,5 @@ if __name__ == '__main__':
     logging = False
     # roberta_baseline(test_distribution, logging)
     # dual_baseline(test_distribution, logging)
-    dual_reptile(train_distribution, test_distribution, logging)
+    # dual_reptile(train_distribution, test_distribution, logging)
+    roberta_pretrained(train_distribution, test_distribution, logging)
