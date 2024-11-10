@@ -10,6 +10,9 @@ from sklearn.metrics import roc_auc_score, precision_recall_curve, auc, roc_curv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sklearn.decomposition import PCA
 import seaborn as sns
+from sklearn.manifold import TSNE
+from sklearn.metrics import silhouette_score
+from scipy.stats import ttest_rel
 
 SAVE_PATH = '/mnt/d/results/'
 
@@ -172,7 +175,19 @@ def generate_metrics(name, n_tests=3):
         'precision': curves['prc_precision']
     }).to_csv(f'{SAVE_PATH}{name}_prc_curve.csv', index=False)
 
-def generate_pca_visualisation(fn):
+def get_metrics():
+    tests = [
+        ('random_baseline', 3),
+        ('majority_baseline', 1),
+        ('optimal_baseline', 1),
+        ('roberta_baseline', 3),
+        ('dual_baseline', 3),
+        ('dual_reptile', 2),
+    ]
+    for name, n_tests in tests:
+        generate_metrics(name, n_tests=n_tests)
+
+def generate_pca_visualisation(fn, draw=False):
     df = pd.read_csv(fn)
     embeddings = df['embeds'].apply(ast.literal_eval).tolist()
     labels = df['label'].values
@@ -183,35 +198,104 @@ def generate_pca_visualisation(fn):
     pca_df = pd.DataFrame(X_pca, columns=['pc1', 'pc2'])
     pca_df['label'] = labels
 
-    # Create the plot
-    plt.figure(figsize=(10, 8))
-    sns.scatterplot(data=pca_df, x='pc1', y='pc2', hue='label', palette='viridis', alpha=0.4)
-    plt.title('PCA Visualization of Embeddings')
-    plt.xlabel('pc1')
-    plt.ylabel('pc2')
-    plt.legend(title='Class')
-    plt.show()
+    # show the plot
+    if draw:
+        plt.figure(figsize=(10, 8))
+        sns.scatterplot(data=pca_df, x='pc1', y='pc2', hue='label', alpha=0.4)
+        plt.title('PCA Visualization of Embeddings')
+        plt.xlabel('pc1')
+        plt.ylabel('pc2')
+        plt.legend(title='Class')
+        plt.show()
+    
+    return pca_df
+
+def generate_tsne_visualisation(fn, draw=False):
+    df = pd.read_csv(fn)
+    embeddings = df['embeds'].apply(ast.literal_eval).tolist()
+    labels = df['label'].values
+    X = np.array(embeddings)
+    
+    tsne = TSNE(n_components=2, random_state=42)
+    X_tsne = tsne.fit_transform(X)
+
+    tsne_df = pd.DataFrame(X_tsne, columns=['tsne1', 'tsne2'])
+    tsne_df['label'] = labels
+
+    # show the plot
+    if draw:
+        plt.figure(figsize=(10, 8))
+        sns.scatterplot(data=tsne_df, x='tsne1', y='tsne2', hue='label', alpha=0.4)
+        plt.title('t-SNE Visualization of Embeddings')
+        plt.xlabel('tsne1')
+        plt.ylabel('tsne2')
+        plt.legend(title='Class')
+        plt.show()
+
+def calculate_silhouette_score_with_pca(fn, n=768):
+    df = pd.read_csv(fn)
+    embeddings = df['embeds'].apply(ast.literal_eval).tolist()
+    labels = df['label'].values
+    
+    X = np.array(embeddings)
+    pca = PCA(n_components=n)
+    X_pca = pca.fit_transform(X)
+
+    score = silhouette_score(X_pca, labels)
+    
+    return score
+
+def t_test(f1, f2, n_tests=3):
+
+    metrics = ['auroc', 'auprc', 'f1_score', 'f0.5_score', 'accuracy', 'precision', 'recall']
+
+    # average result dfs
+    #df1s = []
+    df2s = []
+    for i in range(1, n_tests+1):
+        #df1s.append(pd.read_csv(f'{f1}_{i}.csv', usecols=metrics))
+        df2s.append(pd.read_csv(f'{f2}_{i}.csv', usecols=metrics))
+
+    # df1 = pd.concat(df1s).groupby(level=0).mean()
+    df1 = pd.read_csv(f'{f1}_1.csv', usecols=metrics)
+    df2 = pd.concat(df2s).groupby(level=0).mean()
+    
+    results = {}
+
+    for metric in metrics:
+        # diff = df1[metric] - df2[metric]
+        t_stat, p_value = ttest_rel(df1[metric], df2[metric])
+        results[metric] = {'t_stat': t_stat, 'p_value': p_value}
+
+    return results
 
 
 if __name__ == '__main__':
 
-    tests = [
-        ('random_baseline', 3),
-        ('majority_baseline', 1),
-        ('optimal_baseline', 1),
-        ('roberta_baseline', 3),
-        ('dual_baseline', 3),
-        ('dual_reptile', 1),
-    ]
-    for name, n_tests in tests:
-        generate_metrics(name, n_tests=n_tests)
-    # generate_result_files()
+    generate_result_files()
+    get_metrics()
+    # scores = t_test(f'{SAVE_PATH}dual_reptile', f'{SAVE_PATH}dual_baseline')
+    # print(scores)
     
     # fn = 'Category_Wikipedia_sockpuppets_of_Cassandra872.csv'
     # fn = 'Category_Wikipedia_sockpuppets_of_Griot.csv'
-    # folders = ['dual_reptile_1', 'dual_baseline_1']
+    # fn = 'Category_Wikipedia_sockpuppets_of_Akrumoftruth.csv'
+    # fn = 'Category_Wikipedia_sockpuppets_of_Al_aman_kollam.csv' # pretty g
+    # fn = 'Category_Wikipedia_sockpuppets_of_Artcurator.csv'
+    # fn = 'Category_Wikipedia_sockpuppets_of_Celtic0106.csv'
+    # fn = 'Category_Wikipedia_sockpuppets_of_Film_Fan.csv'
+    # fn = 'Category_Wikipedia_sockpuppets_of_Eurokiwi.csv'
+
+    #bad investigations
+    # fn = 'Category_Wikipedia_sockpuppets_of_Amirharbo.csv'
+    # fn = 'Category_Wikipedia_sockpuppets_of_Cameronfree.csv'
+
+    # folders = ['dual_baseline_1', 'dual_reptile_1']
     # for f in folders:
     #     fn2 = f'{SAVE_PATH}{f}/{fn}'
-    #     generate_pca_visualisation(fn2)
+    #     score = calculate_silhouette_score_with_pca(fn2, n=1)
+    #     print(score)
+    #     pca_df = generate_pca_visualisation(fn2, draw=True)
+    #     pca_df[::-1].to_csv(f'{SAVE_PATH}PCAs/{fn.replace('.csv', '')}_pca_{f}.csv', index=False, float_format="%.2f")
 
 
