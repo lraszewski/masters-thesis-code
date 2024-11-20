@@ -161,6 +161,19 @@ def roberta_pretrained(train_distribution, test_distribution, logging):
     pretrained(save_path, train_distribution, clf, clf_criterion, clf_lr, pretrained_epochs)
     experiment(name, test_distribution, None, None, None, None, clf, clf_criterion, clf_epochs, clf_lr, logging)
 
+def dual_pretrained(train_distribution, test_distribution, logging):
+
+    name = "dual_pretrained"
+    save_path = results_folder(SAVE_DIR, name)
+
+    mdl, mdl_criterion, mdl_epochs, mdl_lr = encoder_model_params()
+    clf, clf_criterion, clf_epochs, clf_lr = encoder_classifier_params()
+
+    pretrained_epochs = 2
+
+    pretrained(save_path, train_distribution, mdl, mdl_criterion, mdl_lr, pretrained_epochs)
+    experiment(name, test_distribution, mdl, mdl_criterion, mdl_epochs, mdl_lr, clf, clf_criterion, clf_epochs, clf_lr, logging)
+
 def maml_exp(task_distribution):
     model = EncoderModel(768, 2, 6).to(DEVICE)
     criterion = nn.TripletMarginWithDistanceLoss(distance_function=lambda x, y: 1 - F.cosine_similarity(x, y),margin=0.2)
@@ -193,4 +206,5 @@ if __name__ == '__main__':
     # roberta_baseline(test_distribution, logging)
     # dual_baseline(test_distribution, logging)
     # dual_reptile(train_distribution, test_distribution, logging)
-    roberta_pretrained(train_distribution, test_distribution, logging)
+    # roberta_pretrained(train_distribution, test_distribution, logging)
+    dual_pretrained(train_distribution, test_distribution, logging)

@@ -61,6 +61,18 @@ def generate_stats(directory):
         os.makedirs('stats')
     df.to_csv('stats/stats.csv', index=False)
 
+def get_large_tasks():
+    if not os.path.exists(STATS_PATH):
+        generate_stats(INVESTIGATIONS_PATH)
+    stats = pd.read_csv(STATS_PATH)
+    return stats.loc[stats['num_puppetmaster'] >= 50, 'name'].tolist()
+
+def get_small_tasks():
+    if not os.path.exists(STATS_PATH):
+        generate_stats(INVESTIGATIONS_PATH)
+    stats = pd.read_csv(STATS_PATH)
+    return stats.loc[stats['num_puppetmaster'] < 50, 'name'].tolist()
+
 # function to return train and test task distributions
 def get_distributions(max_tasks=None):
     if not os.path.exists(STATS_PATH):
@@ -151,3 +163,9 @@ class EarlyStopper:
             if self.counter >= self.patience:
                 return True
         return False
+
+if __name__ == '__main__':
+    train_distribution, test_distribution = get_distributions()
+    print(len(train_distribution))
+    print(len(test_distribution))
+    print(len(train_distribution)+len(test_distribution))

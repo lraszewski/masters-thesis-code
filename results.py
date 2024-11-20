@@ -13,6 +13,7 @@ import seaborn as sns
 from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score
 from scipy.stats import ttest_rel
+from helpers import get_large_tasks, get_small_tasks
 
 SAVE_PATH = '/mnt/d/results/'
 
@@ -128,7 +129,7 @@ def generate_result_files():
             result = read_results(os.path.join(SAVE_PATH, folder))
             result.to_csv(result_file, index=False)
 
-def generate_metrics(name, n_tests=3):
+def generate_metrics(name, n_tests, subset):
     folders = [f'{name}_{i}' for i in range(1,n_tests+1)]
     result = {
         'auroc': [],
@@ -146,6 +147,14 @@ def generate_metrics(name, n_tests=3):
         if not os.path.exists(result_file):
             raise ValueError('result files missing')
         df = pd.read_csv(result_file)
+
+        if subset == 'large':
+            large_tasks = get_large_tasks()
+            df = df[df['fn'].isin(large_tasks)]
+        elif subset == 'small':
+            small_tasks = get_small_tasks()
+            df = df[df['fn'].isin(small_tasks)]
+
         for key in result:
             result[key].append(df[key].mean())
 
@@ -162,7 +171,7 @@ def generate_metrics(name, n_tests=3):
         mean = round(statistics.mean(result[key]) * 100, 2)
         stdev = round(statistics.stdev(result[key]) * 100, 2) if len(result[key]) > 1 else 0.0
         result[key] = (mean, stdev)
-    print(result)
+    print(name, '\n', result)
     
     # save curves
     pd.DataFrame({
@@ -175,7 +184,7 @@ def generate_metrics(name, n_tests=3):
         'precision': curves['prc_precision']
     }).to_csv(f'{SAVE_PATH}{name}_prc_curve.csv', index=False)
 
-def get_metrics():
+def get_metrics(subset):
     tests = [
         ('random_baseline', 3),
         ('majority_baseline', 1),
@@ -183,9 +192,11 @@ def get_metrics():
         ('roberta_baseline', 3),
         ('dual_baseline', 3),
         ('dual_reptile', 2),
+        ('roberta_pretrained', 1),
+        ('dual_pretrained', 1),
     ]
     for name, n_tests in tests:
-        generate_metrics(name, n_tests=n_tests)
+        generate_metrics(name, n_tests, subset)
 
 def generate_pca_visualisation(fn, draw=False):
     df = pd.read_csv(fn)
@@ -273,7 +284,9 @@ def t_test(f1, f2, n_tests=3):
 if __name__ == '__main__':
 
     generate_result_files()
-    get_metrics()
+    get_metrics(subset='small')
+    print("\n\n")
+    get_metrics(subset='large')
     # scores = t_test(f'{SAVE_PATH}dual_reptile', f'{SAVE_PATH}dual_baseline')
     # print(scores)
     

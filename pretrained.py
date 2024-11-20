@@ -3,7 +3,7 @@ from torch.utils.data import DataLoader, ConcatDataset
 from tqdm import tqdm
 
 from helpers import get_roberta, get_dataloader, get_latest_model
-from training import train_classifier
+from training import train_classifier, train_model
 
 def pretrained(save_path, task_distribution, model, criterion, lr, epochs):
 
@@ -53,8 +53,8 @@ def outer_loop(task_distribution, roberta, model, criterion, lr):
 
             # unpack task
             fn = task['fn']
-            support_set = task['support_set_standard']
-            query_set = task['test_set_standard']
+            support_set = task['support_set_triplet']
+            query_set = task['test_set_triplet']
             pos_weight = task['pos_weight']
 
             # no difference between support and test set
@@ -62,7 +62,8 @@ def outer_loop(task_distribution, roberta, model, criterion, lr):
             dataloader = get_dataloader(dataset, shuffle=True, drop_last=True)
 
             # train on the entire task
-            loss = train_classifier(roberta, None, model, optimiser, dataloader, criterion, pos_weight)
+            # loss = train_classifier(roberta, None, model, optimiser, dataloader, criterion, pos_weight)
+            loss = train_model(roberta, model, optimiser, dataloader, criterion, max_steps=1)
             loss = loss.item()
 
             epoch_loss += loss
